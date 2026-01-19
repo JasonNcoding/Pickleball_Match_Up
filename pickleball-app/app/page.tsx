@@ -246,7 +246,7 @@ export default function KotcApp() {
   if (!setupComplete) {
     return (
       <div className="max-w-2xl mx-auto p-6 py-20 space-y-12">
-        <h1 className="text-5xl font-black text-center italic tracking-tighter text-slate-900 uppercase">Kotc Setup</h1>
+        <h1 className="text-5xl font-black text-center italic tracking-tighter text-slate-900 uppercase">Setup</h1>
         
         <div className="bg-white p-8 rounded-[40px] shadow-2xl border border-slate-100 space-y-8">
           <section className="space-y-3">
@@ -277,7 +277,7 @@ export default function KotcApp() {
                 </div>
               ))}
             </div>
-            <p className="text-[10px] text-slate-400 text-center font-bold italic">Scoring Note: Only King Court wins from Round 2 count.</p>
+
           </section>
 
           <section className="space-y-3">
@@ -321,9 +321,10 @@ export default function KotcApp() {
         <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-4">
           {courtOrder.map((cId) => {
             const m = currentMatches[cId];
+            if (!m) return null;
             return (
               <div key={cId} className={`bg-white rounded-[32px] border-2 transition overflow-hidden ${cId === kingCourt ? 'border-amber-400 ring-4 ring-amber-50' : 'border-slate-100'}`}>
-                <div className={`py-2 px-4 text-xs font-black uppercase tracking-widest ${cId === kingCourt ? 'bg-amber-400' : cId === bottomCourt ? 'bg-slate-200' : 'bg-slate-800 text-white'}`}>
+                <div className={`py-2 px-4 text-[15px] text-center font-black uppercase tracking-widest ${cId === kingCourt ? 'bg-amber-400' : cId === bottomCourt ? 'bg-slate-200' : 'bg-slate-800 text-white'}`}>
                   Court {cId} {cId === kingCourt ? '👑' : cId === bottomCourt ? '⬇️' : ''}
                 </div>
                 <div className="p-6 space-y-4">
@@ -339,7 +340,7 @@ export default function KotcApp() {
                             const disabled = !isRoundOne && swapSelection && swapSelection.courtId !== cId;
                             return (
                               <span key={idx} onClick={(e) => {if(isEditMode && !disabled){ e.stopPropagation(); if(!swapSelection) setSwapSelection({courtId: cId, team: teamKey as 'A'|'B', index: idx}); else handleSwap({courtId: cId, team: teamKey as 'A'|'B', index: idx}); }}}
-                                className={`flex-1 text-center py-2 rounded-lg font-bold truncate uppercase transition-all ${isEditMode ? 'bg-orange-100 text-orange-800' : ''} ${active ? 'bg-orange-600 text-white shadow-md' : ''} ${disabled ? 'opacity-20 grayscale' : ''}`}>
+                                className={`flex-1 text-center text-[25px] py-2 rounded-lg font-bold truncate transition-all ${isEditMode ? 'bg-orange-100 text-orange-800' : ''} ${active ? 'bg-orange-600 text-white shadow-md' : ''} ${disabled ? 'opacity-20 grayscale' : ''}`}>
                                 {capitalize(pId)}
                               </span>
                             );
@@ -354,26 +355,27 @@ export default function KotcApp() {
               </div>
             );
           })}
-          <div className="md:col-span-2 flex gap-4 mt-6">
-            <button onClick={() => {if(history.length > 0){ const ph = [...history]; const last = ph.pop(); if(last){ setCurrentMatches(last.matches); setWaitingPlayers(last.waiting); setHistory(ph); }}}} disabled={history.length === 0} className="flex-1 py-6 bg-slate-100 text-slate-400 font-black text-xl rounded-3xl disabled:opacity-30">UNDO</button>
-            <button disabled={!Object.values(currentMatches).every(m => m.winner) || isEditMode}
-              onClick={() => { setHistory([...history, { id: history.length, matches: {...currentMatches}, waiting: [...waitingPlayers] }]); generatePairings(false, players, selectedCourts); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-              className="flex-[2] py-6 bg-indigo-600 text-white font-black text-xl rounded-3xl shadow-xl disabled:bg-slate-200 uppercase">Next Round →</button>
-          </div>
         </div>
         <aside className="space-y-6">
           <div className="bg-slate-900 text-white p-8 rounded-[40px] shadow-2xl">
             <h2 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-center">King Wins</h2>
-            <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest text-center mb-6">Round 2+ Only</p>
             <div className="space-y-4">
-              {getLeaderboard().slice(0, 8).map((e, i) => (
+              {getLeaderboard().slice(0, 5).map((e, i) => (
                 <div key={e.name} className="flex justify-between border-b border-slate-800 pb-2">
-                  <span className="font-bold text-slate-400 uppercase">{i+1}. {capitalize(e.name)}</span>
+                  <span className="font-bold text-slate-400">{i+1}. {capitalize(e.name)}</span>
                   <span className="text-amber-400 font-bold">{e.winCount}</span>
                 </div>
               ))}
             </div>
           </div>
+          <div className="md:col-span-2 flex gap-4 mt-6">
+            <button disabled={!Object.values(currentMatches).every(m => m.winner) || isEditMode}
+              onClick={() => { setHistory([...history, { id: history.length, matches: {...currentMatches}, waiting: [...waitingPlayers] }]); generatePairings(false, players, selectedCourts); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+              className="flex-[2] py-6 bg-indigo-600 text-white font-black text-xl rounded-3xl shadow-xl disabled:bg-slate-200 uppercase">Next Round →</button>
+          </div>
+          <div className="md:col-span-2 flex gap-4 mt-6">
+            <button onClick={() => {if(history.length > 0){ const ph = [...history]; const last = ph.pop(); if(last){ setCurrentMatches(last.matches); setWaitingPlayers(last.waiting); setHistory(ph); }}}} disabled={history.length === 0} className="flex-1 py-6 bg-slate-100 text-slate-400 font-black text-xl rounded-3xl disabled:opacity-10">UNDO</button>
+            </div>
         </aside>
       </div>
 
