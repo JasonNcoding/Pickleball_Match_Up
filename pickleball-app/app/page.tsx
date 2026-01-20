@@ -238,64 +238,161 @@ export default function KotcApp() {
             </div>
           )}
         </div>
-        <button onClick={() => {localStorage.removeItem('kotc_session'); location.reload();}} className="my-12 px-12 py-5 bg-white text-black font-black rounded-full shadow-2xl hover:scale-105 transition-transform uppercase tracking-widest text-lg">New Session</button>
+          <div className="flex flex-col sm:flex-row gap-4 my-12">
+          <button 
+            onClick={() => setTournamentFinished(false)} 
+            className="px-10 py-5 border-2 border-white/20 text-white font-black rounded-full hover:bg-white/10 transition-all uppercase tracking-widest text-lg"
+          >
+            Back to Tournament
+          </button>
+          
+          <button 
+            onClick={() => {if(confirm("Start a brand new session? This clears all data.")){localStorage.removeItem('kotc_session'); location.reload();}}} 
+            className="px-12 py-5 bg-white text-black font-black rounded-full shadow-2xl hover:scale-105 transition-transform uppercase tracking-widest text-lg"
+          >
+            New Session
+          </button>
+        </div>
       </div>
+      
     );
   }
 
   if (!setupComplete) {
     return (
-      <div className="max-w-2xl mx-auto p-6 py-20 space-y-12">
-        <h1 className="text-5xl font-black text-center italic tracking-tighter text-slate-900 uppercase">Setup</h1>
+      <div className="max-w-4xl mx-auto p-6 py-12 space-y-12 bg-white">
+        <header className="text-center space-y-2">
+          <h1 className="text-5xl font-black italic tracking-tighter text-slate-900 uppercase">Tournament Setup</h1>
+          <p className="text-slate-400 font-bold uppercase text-xs tracking-[0.3em]">Configure your session</p>
+        </header>
         
-        <div className="bg-white p-8 rounded-[40px] shadow-2xl border border-slate-100 space-y-8">
-          <section className="space-y-3">
-            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest ml-4">1. Select Available Courts</h3>
-            <div className="grid grid-cols-4 md:grid-cols-7 gap-2">
-              {availableCourts.map(c => (
-                <button key={c} onClick={() => setSelectedCourts(p => p.includes(c) ? p.filter(x => x !== c) : [...p, c])}
-                  className={`py-4 rounded-2xl font-black transition ${selectedCourts.includes(c) ? 'bg-indigo-600 text-white shadow-lg' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>
-                  {c}
-                </button>
-              ))}
-            </div>
-          </section>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          {/* Left Column: Court Config */}
+          <div className="space-y-8">
+            <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100">
+              <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">1. Active Courts</h3>
+              <div className="grid grid-cols-4 gap-2">
+                {availableCourts.map(c => (
+                  <button key={c} onClick={() => setSelectedCourts(p => p.includes(c) ? p.filter(x => x !== c) : [...p, c])}
+                    className={`py-3 rounded-xl font-black transition ${selectedCourts.includes(c) ? 'bg-indigo-600 text-white' : 'bg-white text-slate-300 border border-slate-200'}`}>
+                    {c}
+                  </button>
+                ))}
+              </div>
+            </section>
 
-          <section className="space-y-4">
-            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest ml-4">2. Rank Court Hierarchy (Top = King)</h3>
-            <div className="space-y-2 bg-slate-50 p-4 rounded-[32px] border-2 border-dashed border-slate-200">
-              {courtOrder.map((c, i) => (
-                <div key={c} className={`flex items-center justify-between p-4 bg-white rounded-2xl shadow-sm border ${i === 0 ? 'border-amber-400' : i === courtOrder.length - 1 ? 'border-slate-300' : 'border-slate-100'}`}>
-                  <div className="flex items-center gap-4">
-                    <span className="text-xs font-black text-slate-300">#{i + 1}</span>
-                    <span className="font-black text-slate-800">Court {c} {i === 0 ? '👑' : i === courtOrder.length - 1 ? '⬇️' : ''}</span>
+            <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100">
+              <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">2. Hierarchy</h3>
+              <div className="space-y-2">
+                {courtOrder.map((c, i) => (
+                  <div key={c} className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-200">
+                    <span className="font-black text-sm uppercase">Court {c} {i === 0 ? '👑' : ''}</span>
+                    <div className="flex gap-1">
+                      <button onClick={() => moveCourt(i, 'up')} disabled={i === 0} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded-lg disabled:opacity-0 text-xs">↑</button>
+                      <button onClick={() => moveCourt(i, 'down')} disabled={i === courtOrder.length - 1} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded-lg disabled:opacity-0 text-xs">↓</button>
+                    </div>
                   </div>
-                  <div className="flex gap-1">
-                    <button onClick={() => moveCourt(i, 'up')} disabled={i === 0} className="w-10 h-10 flex items-center justify-center bg-slate-100 rounded-xl disabled:opacity-0">↑</button>
-                    <button onClick={() => moveCourt(i, 'down')} disabled={i === courtOrder.length - 1} className="w-10 h-10 flex items-center justify-center bg-slate-100 rounded-xl disabled:opacity-0">↓</button>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </section>
+          </div>
 
-          </section>
+          {/* Right Column: Advanced Player Input */}
+<div className="space-y-6">
+  <section className="bg-white p-6 rounded-[32px] border-2 border-slate-900 shadow-[8px_8px_0px_rgba(15,23,42,1)]">
+    <div className="flex justify-between items-center mb-4">
+      <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">3. Roster</h3>
+      <span className={`text-[10px] font-black px-2 py-1 rounded-md ${players.length >= selectedCourts.length * 4 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+        {players.length} / {selectedCourts.length * 4} PLAYERS
+      </span>
+    </div>
 
-          <section className="space-y-3">
-            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest ml-4">3. Players ({players.length}/{selectedCourts.length * 4} needed)</h3>
-            <textarea rows={5} value={bulkInput} placeholder="Name, Rating (Ex: Roger, 5.0)"
-                onChange={e => {
-                  setBulkInput(e.target.value);
-                  setPlayers(e.target.value.split('\n').filter(s => s.trim()).map(line => ({
-                    id: line.split(',')[0].trim(), name: line.split(',')[0].trim(), rating: parseFloat(line.split(',')[1]) || 3.5
-                  })));
-                }}
-                className="w-full p-6 bg-slate-50 rounded-[30px] border-none font-medium outline-none focus:ring-2 focus:ring-indigo-600" 
-            />
-          </section>
+    {/* Quick Add / Bulk Paste */}
+    <div className="space-y-2 mb-6">
+      <textarea 
+        rows={3} 
+        value={bulkInput} 
+        placeholder="Paste names (e.g. Mike, Sarah, John)"
+        onChange={e => {
+          setBulkInput(e.target.value);
+          const lines = e.target.value.split(/[\n," "]+/).filter(s => s.trim());
+          const newPlayers = lines.map(line => {
+            const parts = line.split(':'); // Support "Name:Rating"
+            const name = parts[0].trim();
+            const rating = parseFloat(parts[1]) || 3.5;
+            return { id: name, name, rating };
+          });
+          setPlayers(newPlayers);
+        }}
+        className="w-full p-4 bg-slate-50 rounded-2xl border-none font-bold text-sm outline-none focus:ring-2 focus:ring-indigo-600" 
+      />
+      <p className="text-[9px] text-slate-400 font-bold px-2 uppercase tracking-tight">Pro tip: Use "Name : Rating" to paste with levels</p>
+    </div>
 
-          <button disabled={players.length < selectedCourts.length * 4}
-            onClick={() => { generatePairings(true, players, selectedCourts); setSetupComplete(true); }}
-            className="w-full py-6 bg-indigo-600 text-white font-black text-xl rounded-full shadow-xl transition-all hover:bg-indigo-700 disabled:bg-slate-200">START TOURNAMENT</button>
+    {/* Visual Player List with Manual Rating Input */}
+<div className="max-h-[350px] overflow-y-auto space-y-2 pr-2 scrollbar-hide">
+  {players.map((p, idx) => (
+    <div key={idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl group hover:bg-slate-100 transition-colors">
+      <div className="flex flex-col min-w-0 flex-1">
+        <span className="font-black text-slate-700 truncate text-sm uppercase leading-tight">{p.name}</span>
+        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Player {idx + 1}</span>
+      </div>
+      
+      <div className="flex items-center gap-3">
+        {/* Manual Rating Input Box */}
+        <div className="flex flex-col items-end">
+          <label className="text-[8px] font-black text-slate-400 uppercase mb-1 mr-1">Rating</label>
+          <input 
+            type="number" 
+            step="0.01"
+            value={p.rating}
+            onChange={(e) => {
+              const newVal = parseFloat(e.target.value);
+              const next = [...players];
+              // Update only if it's a valid number, otherwise keep as is for typing
+              next[idx].rating = isNaN(newVal) ? 0 : newVal;
+              setPlayers(next);
+            }}
+            className="w-20 px-2 py-1.5 bg-white border-2 border-slate-200 rounded-lg text-xs font-black text-indigo-600 outline-none focus:border-indigo-600 text-center shadow-sm"
+          />
+        </div>
+
+        {/* Remove Player Button */}
+        <button 
+          onClick={() => {
+            const next = players.filter((_, i) => i !== idx);
+            setPlayers(next);
+            setBulkInput(next.map(pl => `${pl.name}:${pl.rating}`).join('\n'));
+          }}
+          className="w-9 h-9 mt-4 flex items-center justify-center bg-white text-red-500 rounded-lg border border-slate-200 hover:bg-red-500 hover:text-white transition-all shadow-sm"
+          title="Remove Player"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  ))}
+  
+  {players.length === 0 && (
+    <div className="py-10 text-center border-2 border-dashed border-slate-100 rounded-2xl">
+      <p className="text-xs font-black text-slate-300 uppercase italic">Waiting for player data...</p>
+    </div>
+  )}
+</div>
+      
+
+  </section>
+
+  <button 
+    disabled={players.length < selectedCourts.length * 4}
+    onClick={() => { generatePairings(true, players, selectedCourts); setSetupComplete(true); }}
+    className="w-full py-6 bg-indigo-600 text-white font-black text-xl rounded-2xl shadow-xl transition-all hover:bg-indigo-700 disabled:bg-slate-100 disabled:text-slate-300 uppercase tracking-widest"
+  >
+    Start Tournament
+  </button>
+</div>
         </div>
       </div>
     );
@@ -311,9 +408,9 @@ export default function KotcApp() {
         <div className="flex gap-2">
           <button onClick={() => setShowHistoryModal(true)} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-slate-200 transition">LOG</button>
           <button onClick={() => { setIsEditMode(!isEditMode); setSwapSelection(null); }}
-            className={`px-6 py-2 rounded-xl font-bold transition ${isEditMode ? 'bg-orange-500 text-white shadow-lg' : 'bg-slate-100 text-slate-600'}`}>{isEditMode ? 'FINISH SWAP' : 'SWAP'}</button>
-          <button onClick={() => setTournamentFinished(true)} className="px-6 py-2 bg-indigo-600 text-white rounded-xl font-bold">FINISH</button>
-          <button onClick={() => {if(confirm("Reset?")) {localStorage.removeItem('kotc_session'); location.reload();}}} className="px-4 py-2 bg-red-50 text-red-600 rounded-xl font-black text-xs border border-red-100">RESET</button>
+            className={`px-6 py-2 rounded-xl font-bold transition ${isEditMode ? 'bg-orange-400 hover:bg-orange-500 text-white shadow-lg transition' : 'hover:bg-slate-200 bg-slate-100 text-slate-600 transition'}`}>{isEditMode ? 'FINISH SWAP' : 'SWAP'}</button>
+          <button onClick={() => setTournamentFinished(true)} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-emerald-500 hover:text-white transition ">FINISH</button>
+          <button onClick={() => {if(confirm("R U Sure, Reset?")) {localStorage.removeItem('kotc_session'); location.reload();}}} className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition rounded-xl font-black text-xs border border-red-100">RESET</button>
         </div>
       </header>
 
@@ -357,6 +454,14 @@ export default function KotcApp() {
           })}
         </div>
         <aside className="space-y-6">
+          <div className="md:col-span-2 flex gap-4 mt-6">
+            <button disabled={!Object.values(currentMatches).every(m => m.winner) || isEditMode}
+              onClick={() => { setHistory([...history, { id: history.length, matches: {...currentMatches}, waiting: [...waitingPlayers] }]); generatePairings(false, players, selectedCourts); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+              className="flex-[2] py-6 bg-indigo-600 text-white font-black text-xl rounded-3xl shadow-xl disabled:bg-slate-200 uppercase transition">Next Round →</button>
+          </div>
+          <div className="md:col-span-2 flex gap-4 mt-6">
+            <button onClick={() => {if(history.length > 0){ const ph = [...history]; const last = ph.pop(); if(last){ setCurrentMatches(last.matches); setWaitingPlayers(last.waiting); setHistory(ph); }}}} disabled={history.length === 0} className="flex-1 py-6 bg-slate-400 text-white font-black text-xl rounded-3xl disabled:opacity-10 transition duration-300 opacity-50 hover:opacity-100">UNDO</button>
+            </div>
           <div className="bg-slate-900 text-white p-8 rounded-[40px] shadow-2xl">
             <h2 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-center">King Wins</h2>
             <div className="space-y-4">
@@ -368,14 +473,7 @@ export default function KotcApp() {
               ))}
             </div>
           </div>
-          <div className="md:col-span-2 flex gap-4 mt-6">
-            <button disabled={!Object.values(currentMatches).every(m => m.winner) || isEditMode}
-              onClick={() => { setHistory([...history, { id: history.length, matches: {...currentMatches}, waiting: [...waitingPlayers] }]); generatePairings(false, players, selectedCourts); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-              className="flex-[2] py-6 bg-indigo-600 text-white font-black text-xl rounded-3xl shadow-xl disabled:bg-slate-200 uppercase">Next Round →</button>
-          </div>
-          <div className="md:col-span-2 flex gap-4 mt-6">
-            <button onClick={() => {if(history.length > 0){ const ph = [...history]; const last = ph.pop(); if(last){ setCurrentMatches(last.matches); setWaitingPlayers(last.waiting); setHistory(ph); }}}} disabled={history.length === 0} className="flex-1 py-6 bg-slate-100 text-slate-400 font-black text-xl rounded-3xl disabled:opacity-10">UNDO</button>
-            </div>
+          
         </aside>
       </div>
 
