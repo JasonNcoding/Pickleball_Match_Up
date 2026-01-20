@@ -315,7 +315,7 @@ export default function KotcApp() {
         placeholder="Paste names (e.g. Mike, Sarah, John)"
         onChange={e => {
           setBulkInput(e.target.value);
-          const lines = e.target.value.split(/[\n," "]+/).filter(s => s.trim());
+          const lines = e.target.value.split(/[\n]+/).filter(s => s.trim());
           const newPlayers = lines.map(line => {
             const parts = line.split(':'); // Support "Name:Rating"
             const name = parts[0].trim();
