@@ -99,8 +99,15 @@ export default function KotcApp() {
 
   const hasPlayedTogetherRecently = (p1: string, p2: string) => {
     if (history.length === 0) return false;
-    const lastRound = history[history.length - 1];
-    return Object.values(lastRound.matches).some(m => (m.teamA.includes(p1) && m.teamA.includes(p2)) || (m.teamB.includes(p1) && m.teamB.includes(p2)));
+    // const lastRound = history[history.length - 1];
+    // return Object.values(lastRound.matches).some(m => (m.teamA.includes(p1) && m.teamA.includes(p2)) || (m.teamB.includes(p1) && m.teamB.includes(p2)));
+    return history.some(round => 
+    Object.values(round.matches).some(m => 
+      (m.teamA.includes(p1) && m.teamA.includes(p2)) || 
+      (m.teamB.includes(p1) && m.teamB.includes(p2))
+    )
+  );
+  
   };
 
   const generatePairings = (isFirst: boolean, roster: Player[], courts: string[]) => {
