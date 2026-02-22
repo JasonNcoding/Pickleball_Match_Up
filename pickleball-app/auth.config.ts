@@ -7,23 +7,28 @@ export const authConfig = {
   callbacks: {
     authorized({ auth, request: { nextUrl } }) {
       const isLoggedIn = !!auth?.user;
-      const isOnAdmin = nextUrl.pathname.startsWith('/tournament/admin');
-      const isOnLogin = nextUrl.pathname === '/login';
+      const { pathname } = nextUrl;
 
-      // 1. If trying to access admin
-      if (isOnAdmin) {
+      // 1. Logic for /tournament/admin (Protected)
+      if (pathname.startsWith('/tournament/admin')) {
         if (isLoggedIn) return true;
-        return false; // Automatically redirects to /login
+        return false; // Redirects unauthenticated to /login
       }
 
-      // 2. Redirect logged-in users away from the login page
-      if (isOnLogin && isLoggedIn) {
+      // 2. Logic to redirect base /tournament to /tournament/admin if logged in
+      // This ensures authenticated users go straight to their dashboard
+      if (pathname === '/tournament' && isLoggedIn) {
         return Response.redirect(new URL('/tournament/admin', nextUrl));
       }
 
-      // 3. Allow all other pages (including client-view /tournament)
+      // 3. Logic for /login page
+      if (pathname === '/login' && isLoggedIn) {
+        return Response.redirect(new URL('/tournament/admin', nextUrl));
+      }
+
+      // 4. Default: Allow access (for public client views)
       return true;
     },
   },
-  providers: [],
+  providers: [], 
 } satisfies NextAuthConfig;

@@ -1,57 +1,95 @@
 'use client';
 
-// LEGACY FILE - NOT IN USE. SEE dashboard/page.tsx FOR THE UPDATED VERSION WITH RATING SUPPORT AND BETTER UI
-
+import { useRouter } from 'next/navigation';
 import React, { useState, useMemo, useEffect } from 'react';
-
-import { Player, Match, Round } from '@/app/lib/definitions';
-import { set } from 'mongoose';
+import { Player,Match, Round } from '@/app/lib/definitions';
+import { saveTournamentState,getTournamentState,clearTournament } from '@/app/lib/actions';
 
 
 export default function Tournament() {
-  const [isHydrated, setIsHydrated] = useState(false);
-  const [setupComplete, setSetupComplete] = useState(false);
-  const [tournamentFinished, setTournamentFinished] = useState(false);
-  const [isEditMode, setIsEditMode] = useState(false);
-  const [showHistoryModal, setShowHistoryModal] = useState(false);
-  const [swapSelection, setSwapSelection] = useState<{courtId?: string, team?: 'A'|'B', index?: number, isWaitlist?: boolean, pId?: string} | null>(null);
+  const router = useRouter();
+    const [isHydrated, setIsHydrated] = useState(false);
+      const [setupComplete, setSetupComplete] = useState(false);
+      const [tournamentFinished, setTournamentFinished] = useState(false);
+      const [isEditMode, setIsEditMode] = useState(false);
+      const [showHistoryModal, setShowHistoryModal] = useState(false);
+      const [swapSelection, setSwapSelection] = useState<{courtId?: string, team?: 'A'|'B', index?: number, isWaitlist?: boolean, pId?: string} | null>(null);
+      
+      const availableCourts = ['1', '2', '3', '4', '5', '6', '7'];
+      const [selectedCourts, setSelectedCourts] = useState<string[]>(['1', '2', '3']);
+      const [courtOrder, setCourtOrder] = useState<string[]>(['1', '2', '3']);
+    
+      const [players, setPlayers] = useState<Player[]>([]);
+      const [waitingPlayers, setWaitingPlayers] = useState<string[]>([]);
+      const [currentMatches, setCurrentMatches] = useState<Record<string, Match>>({});
+      const [history, setHistory] = useState<Round[]>([]);
+      const [bulkInput, setBulkInput] = useState('');
   
-  const availableCourts = ['1', '2', '3', '4', '5', '6', '7'];
-  const [selectedCourts, setSelectedCourts] = useState<string[]>(['1', '2', '3']);
-  const [courtOrder, setCourtOrder] = useState<string[]>(['1', '2', '3']);
-
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [waitingPlayers, setWaitingPlayers] = useState<string[]>([]);
-  const [currentMatches, setCurrentMatches] = useState<Record<string, Match>>({});
-  const [history, setHistory] = useState<Round[]>([]);
-  const [bulkInput, setBulkInput] = useState('');
-
-  useEffect(() => {
-    const saved = localStorage.getItem('kotc_session');
-    if (saved) {
-      try {
-        const data = JSON.parse(saved);
-        setSetupComplete(data.setupComplete);
-        setTournamentFinished(data.tournamentFinished);
-        setSelectedCourts(data.selectedCourts);
-        setCourtOrder(data.courtOrder || data.selectedCourts);
-        setPlayers(data.players);
-        setWaitingPlayers(data.waitingPlayers);
-        setCurrentMatches(data.currentMatches);
-        setHistory(data.history);
-        setBulkInput(data.bulkInput);
-      } catch (e) { console.error(e); }
+    const syncData = React.useCallback(async (overrideState?: any) => {
+    const stateToSave = overrideState || {
+      setupComplete,
+      tournamentFinished,
+      selectedCourts,
+      courtOrder,
+      players,
+      waitingPlayers,
+      currentMatches,
+      history,
+      bulkInput
+    };
+  
+    // Only save if we are hydrated and (setup is complete OR we are forcing a save via override)
+    if (isHydrated && (stateToSave.setupComplete || overrideState)) {
+      console.log("Syncing to cloud...");
+      const result = await saveTournamentState(stateToSave);
+      if (!result.success) console.error("Cloud sync failed");
+      return result;
     }
-    setIsHydrated(true);
+  }, [isHydrated, setupComplete, tournamentFinished, selectedCourts, courtOrder, players, waitingPlayers, currentMatches, history, bulkInput]);
+    
+  
+      useEffect(() => {
+    const loadInitialData = async () => {
+      // 1. Try to get data from Postgres
+      const data = await getTournamentState();
+      
+      if (data) {
+        try {
+          setSetupComplete(data.setupComplete);
+          setTournamentFinished(data.tournamentFinished);
+          setSelectedCourts(data.selectedCourts);
+          setCourtOrder(data.courtOrder || data.selectedCourts);
+          setPlayers(data.players);
+          setWaitingPlayers(data.waitingPlayers);
+          setCurrentMatches(data.currentMatches);
+          setHistory(data.history);
+          setBulkInput(data.bulkInput);
+        } catch (e) {
+          console.error("Error parsing database state:", e);
+        }
+      } else {
+        // 2. Optional: Fallback to localStorage if the DB is empty (for migration)
+        const saved = localStorage.getItem('kotc_session');
+        if (saved) {
+          const localData = JSON.parse(saved);
+          // ... set states from localData if you want to migrate existing data
+        }
+      }
+  
+      setIsHydrated(true);
+    };
+  
+    loadInitialData();
   }, []);
-
-  useEffect(() => {
-    if (isHydrated && setupComplete) {
-      const state = { setupComplete, tournamentFinished, selectedCourts, courtOrder, players, waitingPlayers, currentMatches, history, bulkInput };
-      localStorage.setItem('kotc_session', JSON.stringify(state));
-    }
-  }, [setupComplete, tournamentFinished, selectedCourts, courtOrder, players, waitingPlayers, currentMatches, history, bulkInput, isHydrated]);
-
+    
+      useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      syncData();
+    }, 500); // 1.5s debounce to avoid hitting DB on every single keystroke
+    
+    return () => clearTimeout(timeoutId);
+  }, [syncData]); // Only re-runs if the memoized syncData function changes
+  
   useEffect(() => {
     setCourtOrder(prev => {
       const newBase = selectedCourts.filter(c => prev.includes(c));
@@ -241,7 +279,7 @@ export default function Tournament() {
           </button>
           
           <button 
-            onClick={() => {if(confirm("Start a brand new session? This clears all data.")){localStorage.removeItem('kotc_session'); location.reload();}}} 
+            onClick={async () => {if(confirm("Start a brand new session? This clears all data.")){await clearTournament(); localStorage.removeItem('kotc_session'); location.reload();}}} 
             className="px-12 py-5 bg-white text-black font-black rounded-full shadow-2xl hover:scale-105 transition-transform uppercase tracking-widest text-lg"
           >
             New Session
@@ -257,7 +295,6 @@ export default function Tournament() {
       <div className="max-w-4xl mx-auto p-6 py-12 space-y-12 bg-white">
         <header className="text-center space-y-2">
           <h1 className="text-5xl font-black italic tracking-tighter text-slate-900 uppercase">Tournament Setup</h1>
-          <p className="text-slate-400 font-bold uppercase text-xs tracking-[0.3em]">(SAMPLE)</p>
         </header>
         
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -293,7 +330,7 @@ export default function Tournament() {
 
           {/* Right Column: Advanced Player Input */}
 <div className="space-y-6">
-  <section className="bg-white p-6 rounded-[32px] border-2 border-slate-900 shadow-[8px_8px_0px_rgba(15,23,42,1)]">
+  <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100">
     <div className="flex justify-between items-center mb-4">
       <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">3. Roster</h3>
       <span className={`text-[10px] font-black px-2 py-1 rounded-md ${players.length >= selectedCourts.length * 4 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
@@ -306,7 +343,7 @@ export default function Tournament() {
       <textarea 
         rows={3} 
         value={bulkInput} 
-        placeholder="Paste names (e.g. Mike, Sarah, John)"
+        placeholder="Paste names (e.g. Arthur, Evie, John)"
         onChange={e => {
           setBulkInput(e.target.value);
           const lines = e.target.value.split(/[\n]+/).filter(s => s.trim());
@@ -318,15 +355,15 @@ export default function Tournament() {
           });
           setPlayers(newPlayers);
         }}
-        className="w-full p-4 bg-slate-50 rounded-2xl border-none font-bold text-sm outline-none focus:ring-2 focus:ring-indigo-600" 
+        className="w-full p-4 bg-white rounded-2xl border-none font-bold text-sm outline-none focus:ring-2 focus:ring-indigo-600" 
       />
-      <p className="text-[9px] text-slate-400 font-bold px-2 uppercase tracking-tight">Pro tip: Use "Name : Rating" to paste with levels</p>
+      <p className="text-[9px]  text-slate-400 font-bold px-2 uppercase tracking-tight">Pro tip: Use "Name : Rating" to paste with levels</p>
     </div>
 
     {/* Visual Player List with Manual Rating Input */}
 <div className="max-h-[350px] overflow-y-auto space-y-2 pr-2 scrollbar-hide">
   {players.map((p, idx) => (
-    <div key={idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl group hover:bg-slate-100 transition-colors">
+    <div key={idx} className="flex items-center justify-between p-3 bg-white border-slate-200 rounded-xl group hover:bg-slate-100 transition-colors">
       <div className="flex flex-col min-w-0 flex-1">
         <span className="font-black text-slate-700 truncate text-sm uppercase leading-tight">{p.name}</span>
         <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Player {idx + 1}</span>
@@ -404,7 +441,7 @@ export default function Tournament() {
           <button onClick={() => { setIsEditMode(!isEditMode); setSwapSelection(null); }}
             className={`px-6 py-2 rounded-xl font-bold transition ${isEditMode ? 'bg-orange-400 hover:bg-orange-500 text-white shadow-lg transition' : 'hover:bg-slate-200 bg-slate-100 text-slate-600 transition'}`}>{isEditMode ? 'FINISH SWAP' : 'SWAP'}</button>
           <button onClick={() => setTournamentFinished(true)} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-emerald-500 hover:text-white transition ">FINISH</button>
-          <button onClick={() => {if(confirm("R U Sure, Reset?")) {localStorage.removeItem('kotc_session'); location.reload();}}} className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition rounded-xl font-black text-xs border border-red-100">RESET</button>
+          <button onClick={async () => {if(confirm("R U Sure, Reset?")) {await clearTournament(); localStorage.removeItem('kotc_session'); location.reload();}}} className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition rounded-xl font-black text-xs border border-red-100">RESET</button>
         </div>
       </header>
 
