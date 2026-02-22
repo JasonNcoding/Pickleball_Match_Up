@@ -1,5 +1,7 @@
 'use client';
 
+// LEGACY FILE - NOT IN USE. SEE dashboard/page.tsx FOR THE UPDATED VERSION WITH RATING SUPPORT AND BETTER UI
+
 import React, { useState, useMemo, useEffect } from 'react';
 
 import { Player, Match, Round } from '@/app/lib/definitions';

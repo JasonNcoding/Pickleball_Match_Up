@@ -279,7 +279,7 @@ export default function Tournament() {
           </button>
           
           <button 
-            onClick={async () => {if(confirm("Start a brand new session? This clears all data.")){await clearTournament(); router.push('/tournament/admin/setup'); localStorage.removeItem('kotc_session'); location.reload();}}} 
+            onClick={async () => {if(confirm("Start a brand new session? This clears all data.")){await clearTournament(); localStorage.removeItem('kotc_session'); location.reload();}}} 
             className="px-12 py-5 bg-white text-black font-black rounded-full shadow-2xl hover:scale-105 transition-transform uppercase tracking-widest text-lg"
           >
             New Session
@@ -295,7 +295,6 @@ export default function Tournament() {
       <div className="max-w-4xl mx-auto p-6 py-12 space-y-12 bg-white">
         <header className="text-center space-y-2">
           <h1 className="text-5xl font-black italic tracking-tighter text-slate-900 uppercase">Tournament Setup</h1>
-          <p className="text-slate-400 font-bold uppercase text-xs tracking-[0.3em]">(SAMPLE)</p>
         </header>
         
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -331,7 +330,7 @@ export default function Tournament() {
 
           {/* Right Column: Advanced Player Input */}
 <div className="space-y-6">
-  <section className="bg-white p-6 rounded-[32px] border-2 border-slate-900 shadow-[8px_8px_0px_rgba(15,23,42,1)]">
+  <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100">
     <div className="flex justify-between items-center mb-4">
       <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">3. Roster</h3>
       <span className={`text-[10px] font-black px-2 py-1 rounded-md ${players.length >= selectedCourts.length * 4 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
@@ -344,7 +343,7 @@ export default function Tournament() {
       <textarea 
         rows={3} 
         value={bulkInput} 
-        placeholder="Paste names (e.g. Mike, Sarah, John)"
+        placeholder="Paste names (e.g. Arthur, Evie, John)"
         onChange={e => {
           setBulkInput(e.target.value);
           const lines = e.target.value.split(/[\n]+/).filter(s => s.trim());
@@ -356,15 +355,15 @@ export default function Tournament() {
           });
           setPlayers(newPlayers);
         }}
-        className="w-full p-4 bg-slate-50 rounded-2xl border-none font-bold text-sm outline-none focus:ring-2 focus:ring-indigo-600" 
+        className="w-full p-4 bg-white rounded-2xl border-none font-bold text-sm outline-none focus:ring-2 focus:ring-indigo-600" 
       />
-      <p className="text-[9px] text-slate-400 font-bold px-2 uppercase tracking-tight">Pro tip: Use "Name : Rating" to paste with levels</p>
+      <p className="text-[9px]  text-slate-400 font-bold px-2 uppercase tracking-tight">Pro tip: Use "Name : Rating" to paste with levels</p>
     </div>
 
     {/* Visual Player List with Manual Rating Input */}
 <div className="max-h-[350px] overflow-y-auto space-y-2 pr-2 scrollbar-hide">
   {players.map((p, idx) => (
-    <div key={idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl group hover:bg-slate-100 transition-colors">
+    <div key={idx} className="flex items-center justify-between p-3 bg-white border-slate-200 rounded-xl group hover:bg-slate-100 transition-colors">
       <div className="flex flex-col min-w-0 flex-1">
         <span className="font-black text-slate-700 truncate text-sm uppercase leading-tight">{p.name}</span>
         <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Player {idx + 1}</span>
@@ -442,7 +441,7 @@ export default function Tournament() {
           <button onClick={() => { setIsEditMode(!isEditMode); setSwapSelection(null); }}
             className={`px-6 py-2 rounded-xl font-bold transition ${isEditMode ? 'bg-orange-400 hover:bg-orange-500 text-white shadow-lg transition' : 'hover:bg-slate-200 bg-slate-100 text-slate-600 transition'}`}>{isEditMode ? 'FINISH SWAP' : 'SWAP'}</button>
           <button onClick={() => setTournamentFinished(true)} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-emerald-500 hover:text-white transition ">FINISH</button>
-          <button onClick={async () => {if(confirm("R U Sure, Reset?")) {await clearTournament();router.push('/tournament/admin/setup'); localStorage.removeItem('kotc_session'); location.reload();}}} className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition rounded-xl font-black text-xs border border-red-100">RESET</button>
+          <button onClick={async () => {if(confirm("R U Sure, Reset?")) {await clearTournament(); localStorage.removeItem('kotc_session'); location.reload();}}} className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition rounded-xl font-black text-xs border border-red-100">RESET</button>
         </div>
       </header>
 

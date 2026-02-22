@@ -18,7 +18,7 @@ export const authConfig = {
 
       // 2. Redirect logged-in users away from the login page
       if (isOnLogin && isLoggedIn) {
-        return Response.redirect(new URL('/tournament', nextUrl));
+        return Response.redirect(new URL('/tournament/admin', nextUrl));
       }
 
       // 3. Allow all other pages (including client-view /tournament)
