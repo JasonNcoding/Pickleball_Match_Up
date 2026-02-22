@@ -1,0 +1,315 @@
+'use client';
+
+import { useRouter } from 'next/navigation';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Player,Match, Round } from '@/app/lib/definitions';
+import { saveTournamentState,getTournamentState,clearTournament } from '@/app/lib/actions';
+
+
+export default function Tournament() {
+  const router = useRouter();
+    const [isHydrated, setIsHydrated] = useState(false);
+      const [setupComplete, setSetupComplete] = useState(false);
+      const [tournamentFinished, setTournamentFinished] = useState(false);
+      const [isEditMode, setIsEditMode] = useState(false);
+      const [showHistoryModal, setShowHistoryModal] = useState(false);
+      const [swapSelection, setSwapSelection] = useState<{courtId?: string, team?: 'A'|'B', index?: number, isWaitlist?: boolean, pId?: string} | null>(null);
+      
+      const availableCourts = ['1', '2', '3', '4', '5', '6', '7'];
+      const [selectedCourts, setSelectedCourts] = useState<string[]>(['1', '2', '3']);
+      const [courtOrder, setCourtOrder] = useState<string[]>(['1', '2', '3']);
+    
+      const [players, setPlayers] = useState<Player[]>([]);
+      const [waitingPlayers, setWaitingPlayers] = useState<string[]>([]);
+      const [currentMatches, setCurrentMatches] = useState<Record<string, Match>>({});
+      const [history, setHistory] = useState<Round[]>([]);
+      const [bulkInput, setBulkInput] = useState('');
+  
+    // 1. Create a reusable load function
+  const loadData = async () => {
+    const data = await getTournamentState();
+    if (data) {
+      setSetupComplete(data.setupComplete);
+      setTournamentFinished(data.tournamentFinished);
+      setSelectedCourts(data.selectedCourts);
+      setCourtOrder(data.courtOrder || data.selectedCourts);
+      setPlayers(data.players);
+      setWaitingPlayers(data.waitingPlayers);
+      setCurrentMatches(data.currentMatches);
+      setHistory(data.history);
+    }
+    setIsHydrated(true);
+  };
+
+  // 2. Initial Load
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  // 3. AUTO-REFRESH LOGIC (Polls every 3 seconds)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      console.log("Checking for updates...");
+      loadData();
+    }, 1000); // Adjust to 2000 for faster or 5000 for slower updates
+
+    return () => clearInterval(interval);
+  }, []);
+  
+  
+  useEffect(() => {
+    setCourtOrder(prev => {
+      const newBase = selectedCourts.filter(c => prev.includes(c));
+      const added = selectedCourts.filter(c => !prev.includes(c));
+      return [...newBase, ...added];
+    });
+  }, [selectedCourts]);
+
+  const kingCourt = courtOrder[0];
+  const bottomCourt = courtOrder[courtOrder.length - 1];
+
+  const moveCourt = (index: number, direction: 'up' | 'down') => {
+    const newOrder = [...courtOrder];
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= newOrder.length) return;
+    [newOrder[index], newOrder[targetIndex]] = [newOrder[targetIndex], newOrder[index]];
+    setCourtOrder(newOrder);
+  };
+
+  const capitalize = (str: string) => str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+  const isRoundOne = history.length === 0;
+
+  const getPartnershipCount = (p1: string, p2: string) => {
+    let count = 0;
+    history.forEach(round => {
+      Object.values(round.matches).forEach(m => {
+        if ((m.teamA.includes(p1) && m.teamA.includes(p2)) || (m.teamB.includes(p1) && m.teamB.includes(p2))) count++;
+      });
+    });
+    return count;
+  };
+
+  const hasPlayedTogetherRecently = (p1: string, p2: string) => {
+    if (history.length === 0) return false;
+    // const lastRound = history[history.length - 1];
+    // return Object.values(lastRound.matches).some(m => (m.teamA.includes(p1) && m.teamA.includes(p2)) || (m.teamB.includes(p1) && m.teamB.includes(p2)));
+    return history.some(round => 
+    Object.values(round.matches).some(m => 
+      (m.teamA.includes(p1) && m.teamA.includes(p2)) || 
+      (m.teamB.includes(p1) && m.teamB.includes(p2))
+    )
+  );
+  
+  };
+
+  const generatePairings = (isFirst: boolean, roster: Player[], courts: string[]) => {
+    const needed = courts.length * 4;
+    let playingIds: string[] = [];
+    let waitingIds: string[] = [];
+
+    if (isFirst) {
+      const sortedIds = [...roster].sort((a, b) => a.rating - b.rating).map(p => p.id);
+      playingIds = sortedIds.slice(0, needed);
+      waitingIds = sortedIds.slice(needed);
+    } else {
+      const lastRound = currentMatches;
+      const lastWaiting = [...waitingPlayers];
+      const rankedPool: string[][] = [];
+      courtOrder.forEach((cId) => {
+        const m = lastRound[cId];
+        rankedPool.push(m.winner === 'A' ? m.teamA : m.teamB);
+        rankedPool.push(m.winner === 'A' ? m.teamB : m.teamA);
+      });
+      const newOrder: string[][] = [rankedPool[0]];
+      for (let i = 1; i < courtOrder.length; i++) {
+        newOrder.push(rankedPool[i * 2], rankedPool[(i - 1) * 2 + 1]);
+      }
+      const totalPool = [...newOrder.flat(), ...lastWaiting, ...rankedPool[rankedPool.length - 1]];
+      playingIds = totalPool.slice(0, needed);
+      waitingIds = totalPool.slice(needed);
+    }
+
+    const newMatches: Record<string, Match> = {};
+    courtOrder.forEach((cId, i) => {
+      const p = playingIds.slice(i * 4, (i + 1) * 4);
+      const combos = [
+        { teamA: [p[0], p[3]], teamB: [p[1], p[2]] },
+        { teamA: [p[0], p[2]], teamB: [p[1], p[3]] },
+        { teamA: [p[0], p[1]], teamB: [p[2], p[3]] }
+      ];
+      const scored = combos.map(c => ({
+        ...c,
+        score: (hasPlayedTogetherRecently(c.teamA[0], c.teamA[1]) ? 100 : 0) + (hasPlayedTogetherRecently(c.teamB[0], c.teamB[1]) ? 100 : 0) + getPartnershipCount(c.teamA[0], c.teamA[1]) + getPartnershipCount(c.teamB[0], c.teamB[1])
+      })).sort((a, b) => a.score - b.score);
+      newMatches[cId] = { ...scored[0], winner: null };
+    });
+    setCurrentMatches(newMatches);
+    setWaitingPlayers(waitingIds);
+  };
+
+  const handleSwap = (target: {courtId?: string, team?: 'A'|'B', index?: number, isWaitlist?: boolean, pId?: string}) => {
+    if (!isEditMode || !swapSelection) return;
+    if (!isRoundOne && (swapSelection.courtId !== target.courtId || swapSelection.isWaitlist || target.isWaitlist)) {
+      alert("From Round 2, players can only be swapped within the same court.");
+      setSwapSelection(null);
+      return;
+    }
+    const newMatches = JSON.parse(JSON.stringify(currentMatches));
+    const newWaiting = [...waitingPlayers];
+    const p1 = swapSelection.isWaitlist ? swapSelection.pId! : newMatches[swapSelection.courtId!][swapSelection.team === 'A' ? 'teamA' : 'teamB'][swapSelection.index!];
+    const p2 = target.isWaitlist ? target.pId! : newMatches[target.courtId!][target.team === 'A' ? 'teamA' : 'teamB'][target.index!];
+    if (swapSelection.isWaitlist) newWaiting[newWaiting.indexOf(p1)] = p2;
+    else newMatches[swapSelection.courtId!][swapSelection.team === 'A' ? 'teamA' : 'teamB'][swapSelection.index!] = p2;
+    if (target.isWaitlist) newWaiting[newWaiting.indexOf(p2)] = p1;
+    else newMatches[target.courtId!][target.team === 'A' ? 'teamA' : 'teamB'][target.index!] = p1;
+    setCurrentMatches(newMatches);
+    setWaitingPlayers(newWaiting);
+    setSwapSelection(null);
+  };
+
+  // --- UPDATED LEADERBOARD LOGIC ---
+  const getLeaderboard = () => {
+    const wins: Record<string, number> = {};
+    players.forEach(p => wins[p.id] = 0);
+    
+    history.forEach((round, index) => {
+      // index 0 = Round 1 (Ignore)
+      // index 1 = Round 2, index 2 = Round 3, etc.
+      if (index >= 1) { 
+        const km = round.matches[kingCourt];
+        if (km?.winner) {
+          const winners = km.winner === 'A' ? km.teamA : km.teamB;
+          winners.forEach(wId => {
+            wins[wId] = (wins[wId] || 0) + 1;
+          });
+        }
+      }
+    });
+    return Object.entries(wins).map(([id, winCount]) => ({ 
+      name: players.find(p => p.id === id)?.name || id, 
+      winCount 
+    })).sort((a, b) => b.winCount - a.winCount);
+  };
+
+  if (tournamentFinished) {
+    const stats = getLeaderboard();
+    const grouped = stats.reduce((acc, curr) => {
+      if (!acc[curr.winCount]) acc[curr.winCount] = [];
+      acc[curr.winCount].push(curr.name);
+      return acc;
+    }, {} as Record<number, string[]>);
+    const sortedScores = Object.keys(grouped).map(Number).sort((a, b) => b - a);
+    const podium = [
+      { names: grouped[sortedScores[0]] || [], score: sortedScores[0] || 0 },
+      { names: grouped[sortedScores[1]] || [], score: sortedScores[1] || 0 },
+      { names: grouped[sortedScores[2]] || [], score: sortedScores[2] || 0 },
+    ];
+
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-start text-white p-6 pt-20 font-sans overflow-y-auto">
+        <h1 className="text-5xl font-black italic mb-20 text-amber-400 uppercase tracking-tighter text-center">Final Standings</h1>
+        <div className="flex flex-col md:flex-row items-end justify-center gap-6 w-full max-w-5xl pb-10">
+          {podium[1].names.length > 0 && (
+            <div className="flex flex-col items-center w-full md:w-1/3 order-2 md:order-1">
+              <div className="text-center mb-4 min-h-[60px] flex flex-col justify-end">
+                {podium[1].names.map(n => <div key={n} className="font-bold uppercase text-slate-300 text-sm">{capitalize(n)}</div>)}
+                <div className="text-xs font-black text-slate-500 mt-1">{podium[1].score} WINS</div>
+              </div>
+              <div className="bg-slate-700 w-full max-w-[150px] h-40 rounded-t-3xl border-t-8 border-slate-400 flex items-center justify-center text-4xl font-black text-slate-400">2</div>
+            </div>
+          )}
+          {podium[0].names.length > 0 && (
+            <div className="flex flex-col items-center w-full md:w-1/3 order-1 md:order-2">
+              <div className="text-center mb-4 min-h-[100px] flex flex-col justify-end">
+                {podium[0].names.map(n => <div key={n} className="font-black uppercase text-amber-400 text-xl leading-tight">👑 {capitalize(n)}</div>)}
+                <div className="text-sm font-black text-amber-600 mt-2">{podium[0].score} WINS</div>
+              </div>
+              <div className="bg-amber-600 w-full max-w-[180px] h-64 rounded-t-3xl border-t-8 border-amber-300 shadow-[0_0_60px_rgba(245,158,11,0.4)] flex items-center justify-center text-7xl font-black text-amber-200">1</div>
+            </div>
+          )}
+          {podium[2].names.length > 0 && (
+            <div className="flex flex-col items-center w-full md:w-1/3 order-3">
+              <div className="text-center mb-4 min-h-[60px] flex flex-col justify-end">
+                {podium[2].names.map(n => <div key={n} className="font-bold uppercase text-orange-400 text-sm">{capitalize(n)}</div>)}
+                <div className="text-xs font-black text-orange-600 mt-1">{podium[2].score} WINS</div>
+              </div>
+              <div className="bg-orange-900 w-full max-w-[150px] h-24 rounded-t-3xl border-t-8 border-orange-600 flex items-center justify-center text-3xl font-black text-orange-700">3</div>
+            </div>
+          )}
+        </div>
+          
+      </div>
+      
+    );
+  }
+  return (
+    <div className="max-w-7xl mx-auto p-4 lg:p-10">
+      <header className="flex flex-wrap justify-between items-center gap-4 mb-10">
+        <div>
+          <h1 className="text-4xl font-black italic uppercase tracking-tighter">Round {history.length + 1}</h1>
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">King: Court {kingCourt} • Bottom: Court {bottomCourt}</p>
+        </div>
+        
+      </header>
+
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-10">
+        <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+          {courtOrder.map((cId) => {
+            const m = currentMatches[cId];
+            if (!m) return null;
+            return (
+              <div key={cId} className={`bg-white rounded-[32px] border-2 transition overflow-hidden ${cId === kingCourt ? 'border-amber-400 ring-4 ring-amber-50' : 'border-slate-100'}`}>
+                <div className={`py-2 px-4 text-[15px] text-center font-black uppercase tracking-widest ${cId === kingCourt ? 'bg-amber-400' : cId === bottomCourt ? 'bg-slate-200' : 'bg-slate-800 text-white'}`}>
+                  Court {cId} {cId === kingCourt ? '👑' : cId === bottomCourt ? '⬇️' : ''}
+                </div>
+                <div className="p-6 space-y-4">
+                  {['A', 'B'].map((teamKey) => {
+                    const team = teamKey === 'A' ? m.teamA : m.teamB;
+                    const isRepeat = hasPlayedTogetherRecently(team[0], team[1]);
+                    return (
+                      <div key={teamKey} className="relative">
+                        <div 
+                          className={`flex gap-2 p-4 rounded-2xl border-2 transition cursor-pointer ${m.winner === teamKey ? 'bg-indigo-50 border-indigo-500 shadow-inner' : 'bg-slate-50 border-transparent hover:border-slate-200'}`}>
+                          {team.map((pId, idx) => {
+                            const active = swapSelection?.courtId === cId && swapSelection.team === teamKey && swapSelection.index === idx;
+                            const disabled = !isRoundOne && swapSelection && swapSelection.courtId !== cId;
+                            return (
+                              <span key={idx} onClick={(e) => {if(isEditMode && !disabled){ e.stopPropagation(); if(!swapSelection) setSwapSelection({courtId: cId, team: teamKey as 'A'|'B', index: idx}); else handleSwap({courtId: cId, team: teamKey as 'A'|'B', index: idx}); }}}
+                                className={`flex-1 text-center text-[25px] py-2 rounded-lg font-bold truncate transition-all ${isEditMode ? 'bg-orange-100 text-orange-800' : ''} ${active ? 'bg-orange-600 text-white shadow-md' : ''} ${disabled ? 'opacity-20 grayscale' : ''}`}>
+                                {capitalize(pId)}
+                              </span>
+                            );
+                          })}
+                        </div>
+
+                        {teamKey === 'A' && <div className="text-center text-[10px] font-black text-slate-300 py-1 italic">VS</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <aside className="space-y-6">
+
+          <div className="bg-slate-900 text-white p-8 rounded-[40px] shadow-2xl">
+            <h2 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-center">King Wins</h2>
+            <div className="space-y-4">
+              {getLeaderboard().slice(0, 5).map((e, i) => (
+                <div key={e.name} className="flex justify-between border-b border-slate-800 pb-2">
+                  <span className="font-bold text-slate-400">{i+1}. {capitalize(e.name)}</span>
+                  <span className="text-amber-400 font-bold">{e.winCount}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          
+        </aside>
+      </div>
+
+      {/* --- HISTORY LOG MODAL --- */}
+
+    </div>
+  );
+}
