@@ -5,7 +5,7 @@ import { AuthError } from 'next-auth';
 import { signOut } from '@/auth';
 import postgres from 'postgres';
  
-const sql = postgres(process.env.POSTGRES_URL_NON_POOLING!, { ssl: 'require' });
+const sql = postgres(process.env.POSTGRES_URL!);
 import { revalidatePath } from 'next/cache';
 
 
