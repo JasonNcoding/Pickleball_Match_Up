@@ -243,61 +243,87 @@ export default function Tournament() {
     );
   }
   return (
-    <div className="max-w-7xl mx-auto p-4 lg:p-10">
-      <header className="flex flex-wrap justify-between items-center gap-4 mb-10">
+    <div className="mx-auto p-2 lg:p-10">
+      <header className="flex flex-wrap justify-between items-center gap-4 mb-5">
         <div>
           <h1 className="text-4xl font-black italic uppercase tracking-tighter">Round {history.length + 1}</h1>
-          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">King: Court {kingCourt} • Bottom: Court {bottomCourt}</p>
         </div>
         
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-10">
-        <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-6 gap-10">
+        <div className="lg:col-span-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-6">
           {courtOrder.map((cId) => {
             const m = currentMatches[cId];
             if (!m) return null;
             return (
-              <div key={cId} className={`bg-white rounded-[32px] border-2 transition overflow-hidden ${cId === kingCourt ? 'border-amber-400 ring-4 ring-amber-50' : 'border-slate-100'}`}>
-                <div className={`py-2 px-4 text-[15px] text-center font-black uppercase tracking-widest ${cId === kingCourt ? 'bg-amber-400' : cId === bottomCourt ? 'bg-slate-200' : 'bg-slate-800 text-white'}`}>
+              <div key={cId} className={`bg-white h-fit rounded-[32px] border-2 transition overflow-hidden shadow-sm ${cId === kingCourt ? 'border-amber-400 ring-4 ring-amber-50' : 'border-slate-100'}`}>
+                {/* Court Header */}
+                <div className={`py-2 px-4 text-[20px] text-center font-black uppercase tracking-widest ${cId === kingCourt ? 'bg-amber-400 text-slate-900' : cId === bottomCourt ? 'bg-slate-200 text-slate-600' : 'bg-slate-800 text-white'}`}>
                   Court {cId} {cId === kingCourt ? '👑' : cId === bottomCourt ? '⬇️' : ''}
                 </div>
-                <div className="p-6 space-y-4">
-                  {['A', 'B'].map((teamKey) => {
-                    const team = teamKey === 'A' ? m.teamA : m.teamB;
-                    const isRepeat = hasPlayedTogetherRecently(team[0], team[1]);
-                    return (
-                      <div key={teamKey} className="relative">
+
+                {/* Match Grid Area */}
+                <div className="p-3 relative">
+                  {/* The Central "VS" Badge */}
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+                    <div className="bg-white px-3 py-1 rounded-full border-2 border-slate-100 text-[15px] font-black text-slate-400 italic shadow-sm">
+                      VS
+                    </div>
+                  </div>
+
+                  {/* The 2x2 Layout */}
+                  <div className="grid grid-cols-2 gap-10">
+                    {['A', 'B'].map((teamKey) => {
+                      const team = teamKey === 'A' ? m.teamA : m.teamB;
+                      return (
                         <div 
-                          className={`flex gap-2 p-4 rounded-2xl border-2 transition cursor-pointer ${m.winner === teamKey ? 'bg-indigo-50 border-indigo-500 shadow-inner' : 'bg-slate-50 border-transparent hover:border-slate-200'}`}>
+                          key={teamKey} 
+                          className={`flex flex-col gap-0 rounded-2xl border-2 transition cursor-pointer ${
+                            m.winner === teamKey ? 'bg-indigo-50 border-indigo-500' : 'bg-slate-50 border-transparent hover:border-slate-200'
+                          }`}
+                        >
                           {team.map((pId, idx) => {
                             const active = swapSelection?.courtId === cId && swapSelection.team === teamKey && swapSelection.index === idx;
                             const disabled = !isRoundOne && swapSelection && swapSelection.courtId !== cId;
+                            
                             return (
-                              <span key={idx} onClick={(e) => {if(isEditMode && !disabled){ e.stopPropagation(); if(!swapSelection) setSwapSelection({courtId: cId, team: teamKey as 'A'|'B', index: idx}); else handleSwap({courtId: cId, team: teamKey as 'A'|'B', index: idx}); }}}
-                                className={`flex-1 text-center text-[25px] py-2 rounded-lg font-bold truncate transition-all ${isEditMode ? 'bg-orange-100 text-orange-800' : ''} ${active ? 'bg-orange-600 text-white shadow-md' : ''} ${disabled ? 'opacity-20 grayscale' : ''}`}>
+                              <span 
+                                key={idx} 
+                                onClick={(e) => {
+                                  if(isEditMode && !disabled){ 
+                                    e.stopPropagation(); 
+                                    if(!swapSelection) setSwapSelection({courtId: cId, team: teamKey as 'A'|'B', index: idx}); 
+                                    else handleSwap({courtId: cId, team: teamKey as 'A'|'B', index: idx}); 
+                                  }
+                                }}
+                                className={`w-full text-center text-[40px] py-4 rounded-xl font-bold break-words overflow-wrap-anywhere whitespace-normal transition-all ${
+                                  isEditMode ? 'bg-orange-100 text-orange-800' : 'text-slate-800'
+                                } ${active ? 'bg-orange-600 text-white shadow-md' : ''} ${
+                                  disabled ? 'opacity-20 grayscale' : ''
+                                }`}
+                              >
                                 {capitalize(pId)}
                               </span>
                             );
                           })}
                         </div>
-
-                        {teamKey === 'A' && <div className="text-center text-[10px] font-black text-slate-300 py-1 italic">VS</div>}
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             );
           })}
         </div>
-        <aside className="space-y-6">
+
+        <aside className="space-y-6 w-full">
 
           <div className="bg-slate-900 text-white p-8 rounded-[40px] shadow-2xl">
-            <h2 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-center">King Wins</h2>
+            <h2 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-center">Leaderboard</h2>
             <div className="space-y-4">
               {getLeaderboard().slice(0, 5).map((e, i) => (
-                <div key={e.name} className="flex justify-between border-b border-slate-800 pb-2">
+                <div key={e.name} className="flex text-[20px] justify-between border-b border-slate-800 pb-2">
                   <span className="font-bold text-slate-400">{i+1}. {capitalize(e.name)}</span>
                   <span className="text-amber-400 font-bold">{e.winCount}</span>
                 </div>

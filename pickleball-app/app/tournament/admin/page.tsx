@@ -430,7 +430,7 @@ export default function Tournament() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto p-4 lg:p-10">
+    <div className="mx-auto p-4 lg:p-10">
       <header className="flex flex-wrap justify-between items-center gap-4 mb-10">
         <div>
           <h1 className="text-4xl font-black italic uppercase tracking-tighter">Round {history.length + 1}</h1>
@@ -451,39 +451,52 @@ export default function Tournament() {
             const m = currentMatches[cId];
             if (!m) return null;
             return (
-              <div key={cId} className={`bg-white rounded-[32px] border-2 transition overflow-hidden ${cId === kingCourt ? 'border-amber-400 ring-4 ring-amber-50' : 'border-slate-100'}`}>
+              <div key={cId} className={`bg-white h-fit rounded-[32px] border-2 transition overflow-hidden ${cId === kingCourt ? 'border-amber-400 ring-4 ring-amber-50' : 'border-slate-100'}`}>
+                {/* Court Header */}
                 <div className={`py-2 px-4 text-[15px] text-center font-black uppercase tracking-widest ${cId === kingCourt ? 'bg-amber-400' : cId === bottomCourt ? 'bg-slate-200' : 'bg-slate-800 text-white'}`}>
                   Court {cId} {cId === kingCourt ? '👑' : cId === bottomCourt ? '⬇️' : ''}
                 </div>
-                <div className="p-6 space-y-4">
+
+                {/* Match Grid Area */}
+                <div className="p-4 relative">
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+                    <div className="bg-white px-3 py-1 rounded-full border-2 border-slate-100 text-[11px] font-black text-slate-400 italic shadow-sm">
+                      VS
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-10">
                   {['A', 'B'].map((teamKey) => {
                     const team = teamKey === 'A' ? m.teamA : m.teamB;
                     const isRepeat = hasPlayedTogetherRecently(team[0], team[1]);
                     return (
                       <div key={teamKey} className="relative">
                         <div onClick={() => !isEditMode && setCurrentMatches({...currentMatches, [cId]: {...m, winner: teamKey as 'A'|'B'}})}
-                          className={`flex gap-2 p-4 rounded-2xl border-2 transition cursor-pointer ${m.winner === teamKey ? 'bg-indigo-50 border-indigo-500 shadow-inner' : 'bg-slate-50 border-transparent hover:border-slate-200'}`}>
+                          className={`flex flex-col gap-2 p-4 rounded-2xl border-2 transition cursor-pointer ${m.winner === teamKey ? 'bg-indigo-50 border-indigo-500 shadow-inner' : 'bg-slate-50 border-transparent hover:border-slate-200'}`}>
                           {team.map((pId, idx) => {
                             const active = swapSelection?.courtId === cId && swapSelection.team === teamKey && swapSelection.index === idx;
                             const disabled = !isRoundOne && swapSelection && swapSelection.courtId !== cId;
                             return (
                               <span key={idx} onClick={(e) => {if(isEditMode && !disabled){ e.stopPropagation(); if(!swapSelection) setSwapSelection({courtId: cId, team: teamKey as 'A'|'B', index: idx}); else handleSwap({courtId: cId, team: teamKey as 'A'|'B', index: idx}); }}}
-                                className={`flex-1 text-center text-[25px] py-2 rounded-lg font-bold truncate transition-all ${isEditMode ? 'bg-orange-100 text-orange-800' : ''} ${active ? 'bg-orange-600 text-white shadow-md' : ''} ${disabled ? 'opacity-20 grayscale' : ''}`}>
+                                className={`w-full text-center text-[20px] py-4 rounded-xl font-bold truncate transition-all  ${isEditMode ? 'bg-orange-100 text-orange-800' : ''} ${active ? 'bg-orange-600 text-white shadow-md' : ''} ${disabled ? 'opacity-20 grayscale' : ''}`}>
                                 {capitalize(pId)}
                               </span>
                             );
                           })}
                         </div>
                         {isRepeat && <div className="absolute -top-2 -right-1 bg-red-600 text-white text-[8px] px-2 py-0.5 rounded-full font-black animate-pulse shadow-sm z-10 uppercase">Repeat Partner</div>}
-                        {teamKey === 'A' && <div className="text-center text-[10px] font-black text-slate-300 py-1 italic">VS</div>}
+
                       </div>
                     );
                   })}
+                  </div>
                 </div>
               </div>
             );
           })}
         </div>
+
+        
         <aside className="space-y-6">
           <div className="md:col-span-2 flex gap-4 mt-6">
             <button disabled={!Object.values(currentMatches).every(m => m.winner) || isEditMode}
@@ -494,9 +507,9 @@ export default function Tournament() {
             <button onClick={() => {if(history.length > 0){ const ph = [...history]; const last = ph.pop(); if(last){ setCurrentMatches(last.matches); setWaitingPlayers(last.waiting); setHistory(ph); }}}} disabled={history.length === 0} className="flex-1 py-6 bg-slate-400 text-white font-black text-xl rounded-3xl disabled:opacity-10 transition duration-300 opacity-50 hover:opacity-100">UNDO</button>
             </div>
           <div className="bg-slate-900 text-white p-8 rounded-[40px] shadow-2xl">
-            <h2 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-center">King Wins</h2>
+            <h2 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-center">Leaderboard</h2>
             <div className="space-y-4">
-              {getLeaderboard().slice(0, 5).map((e, i) => (
+              {getLeaderboard().slice(0, 8).map((e, i) => (
                 <div key={e.name} className="flex justify-between border-b border-slate-800 pb-2">
                   <span className="font-bold text-slate-400">{i+1}. {capitalize(e.name)}</span>
                   <span className="text-amber-400 font-bold">{e.winCount}</span>
@@ -540,31 +553,92 @@ export default function Tournament() {
                         <div className="h-px flex-1 bg-slate-100"></div>
                       </div>
                       
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {courtOrder.map(cId => {
-                          const m = round.matches[cId];
-                          if (!m) return null;
-                          const isKing = cId === kingCourt;
-                          const countsForPoints = isKing && currentRoundNum > 1;
-                          return (
-                            <div key={cId} className={`rounded-3xl p-5 border ${countsForPoints ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-100'}`}>
-                              <div className="text-[10px] font-black uppercase mb-3 flex justify-between">
-                                <span className="text-slate-400">Court {cId}</span>
-                                {isKing && <span className={countsForPoints ? "text-amber-600" : "text-slate-400"}>King Court</span>}
-                              </div>
-                              <div className="flex items-center justify-between gap-2">
-                                <div className={`flex-1 text-center p-2 rounded-xl border ${m.winner === 'A' ? (countsForPoints ? 'bg-amber-500 text-white border-transparent shadow-md' : 'bg-indigo-600 text-white border-transparent') : 'bg-white text-slate-400 border-slate-100'} font-bold`}>
-                                  {m.teamA.map(capitalize).join(' & ')}
-                                </div>
-                                <div className="text-[10px] font-black text-slate-300">VS</div>
-                                <div className={`flex-1 text-center p-2 rounded-xl border ${m.winner === 'B' ? (countsForPoints ? 'bg-amber-500 text-white border-transparent shadow-md' : 'bg-indigo-600 text-white border-transparent') : 'bg-white text-slate-400 border-slate-100'} font-bold`}>
-                                  {m.teamB.map(capitalize).join(' & ')}
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
+                      <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+  {courtOrder.map((cId) => {
+    const m = currentMatches[cId];
+    if (!m) return null;
+
+    const isKing = cId === kingCourt;
+    const isBottom = cId === bottomCourt;
+    // Note: currentRoundNum should be history.length + 1
+    const currentRoundNum = history.length + 1;
+    const countsForPoints = isKing && currentRoundNum > 1;
+
+    return (
+      <div 
+        key={cId} 
+        className={`rounded-[32px] border-2 transition-all overflow-hidden shadow-sm 
+          ${countsForPoints ? 'bg-amber-50 border-amber-400 ring-4 ring-amber-100' : 'bg-white border-slate-100'}`}
+      >
+        {/* Court Header - Styled like the first code but with functional icons */}
+        <div className={`py-2 px-4 text-[13px] font-black uppercase tracking-widest flex justify-between items-center
+          ${isKing ? 'bg-amber-400 text-slate-900' : isBottom ? 'bg-slate-200 text-slate-600' : 'bg-slate-800 text-white'}`}>
+          <span>Court {cId}</span>
+          {isKing && <span>{countsForPoints ? '👑 King Court (Points Active)' : '👑 King Court'}</span>}
+          {isBottom && <span>⬇️ Bottom Court</span>}
+        </div>
+
+        <div className="p-2 relative">
+          {/* The Central "VS" Badge - From Code 2 */}
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+            <div className="bg-white px-3 py-1 rounded-full border-2 border-slate-100 text-[11px] font-black text-slate-400 italic shadow-sm">
+              VS
+            </div>
+          </div>
+
+          {/* The 2x2 Functional Grid */}
+          <div className="grid grid-cols-2 gap-4">
+            {['A', 'B'].map((teamKey) => {
+              const team = teamKey === 'A' ? m.teamA : m.teamB;
+              const isWinner = m.winner === teamKey;
+              
+              return (
+                <div 
+                  key={teamKey} 
+                  onClick={() => {
+                    // Winner Selection Logic from Code 2
+                    const newMatches = { ...currentMatches };
+                    newMatches[cId] = { ...m, winner: teamKey as 'A' | 'B' };
+                    setCurrentMatches(newMatches);
+                  }}
+                  className={`flex flex-col gap-0 rounded-2xl border-2 transition-all cursor-pointer
+                    ${isWinner 
+                      ? (countsForPoints ? 'bg-amber-500 border-transparent shadow-lg scale-[1.02]' : 'bg-indigo-600 border-transparent shadow-lg scale-[1.02]') 
+                      : 'bg-slate-50 border-transparent hover:border-slate-200'}`}
+                >
+                  {team.map((pId, idx) => {
+                    const active = swapSelection?.courtId === cId && swapSelection.team === teamKey && swapSelection.index === idx;
+                    const disabled = !isRoundOne && swapSelection && swapSelection.courtId !== cId;
+                    
+                    return (
+                      <span 
+                        key={idx} 
+                        onClick={(e) => {
+                          // Swapping Logic from Code 2
+                          if (isEditMode && !disabled) { 
+                            e.stopPropagation(); 
+                            if (!swapSelection) setSwapSelection({courtId: cId, team: teamKey as 'A'|'B', index: idx}); 
+                            else handleSwap({courtId: cId, team: teamKey as 'A'|'B', index: idx}); 
+                          }
+                        }}
+                        className={`w-full text-center text-[18px] py-3 rounded-xl font-bold transition-all break-words leading-tight
+                          ${isWinner ? 'text-white' : (isEditMode ? 'bg-orange-100 text-orange-800' : 'text-slate-800')} 
+                          ${active ? 'bg-orange-600 text-white ring-4 ring-orange-200' : ''} 
+                          ${disabled ? 'opacity-20 grayscale' : ''}`}
+                      >
+                        {capitalize(pId)}
+                      </span>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  })}
+</div>
                     </div>
                   );
                 })
