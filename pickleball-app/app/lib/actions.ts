@@ -5,7 +5,11 @@ import { AuthError } from 'next-auth';
 import { signOut } from '@/auth';
 import postgres from 'postgres';
  
-const sql = postgres(process.env.POSTGRES_URL!, {ssl: 'require'});
+const sql = postgres(process.env.POSTGRES_URL!, {
+  ssl: 'require', 
+  prepare: true, // Tells the DB to pre-compile the SQL logic
+  idle_timeout: 20,
+  max: 1});
 import { revalidatePath } from 'next/cache';
 
 
