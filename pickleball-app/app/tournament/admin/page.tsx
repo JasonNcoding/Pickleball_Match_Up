@@ -16,7 +16,7 @@ export default function Tournament() {
       const [swapSelection, setSwapSelection] = useState<{courtId?: string, team?: 'A'|'B', index?: number, isWaitlist?: boolean, pId?: string} | null>(null);
       
       const availableCourts = ['1', '2', '3', '4', '5', '6', '7'];
-      const [selectedCourts, setSelectedCourts] = useState<string[]>(['1', '2', '3']);
+      const [selectedCourts, setSelectedCourts] = useState<string[]>(['3', '4', '5', '6', '7']);
       const [courtOrder, setCourtOrder] = useState<string[]>(['1', '2', '3']);
     
       const [players, setPlayers] = useState<Player[]>([]);
@@ -241,36 +241,24 @@ export default function Tournament() {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-start text-white p-6 pt-20 font-sans overflow-y-auto">
         <h1 className="text-5xl font-black italic mb-20 text-amber-400 uppercase tracking-tighter text-center">Final Standings</h1>
-        <div className="flex flex-col md:flex-row items-end justify-center gap-6 w-full max-w-5xl pb-10">
-          {podium[1].names.length > 0 && (
-            <div className="flex flex-col items-center w-full md:w-1/3 order-2 md:order-1">
-              <div className="text-center mb-4 min-h-[60px] flex flex-col justify-end">
-                {podium[1].names.map(n => <div key={n} className="font-bold uppercase text-slate-300 text-sm">{capitalize(n)}</div>)}
-                <div className="text-xs font-black text-slate-500 mt-1">{podium[1].score} WINS</div>
-              </div>
-              <div className="bg-slate-700 w-full max-w-[150px] h-40 rounded-t-3xl border-t-8 border-slate-400 flex items-center justify-center text-4xl font-black text-slate-400">2</div>
-            </div>
-          )}
+        <div className="flex flex-col md:flex-row mb-4 items-end justify-center gap-6 w-full max-w-5xl pb-10">
           {podium[0].names.length > 0 && (
             <div className="flex flex-col items-center w-full md:w-1/3 order-1 md:order-2">
-              <div className="text-center mb-4 min-h-[100px] flex flex-col justify-end">
-                {podium[0].names.map(n => <div key={n} className="font-black uppercase text-amber-400 text-xl leading-tight">👑 {capitalize(n)}</div>)}
-                <div className="text-sm font-black text-amber-600 mt-2">{podium[0].score} WINS</div>
+              <div className="text-center mb-1 min-h-[100px] flex flex-col justify-end">
+                {podium[0].names.map(n => 
+                <div key={n} 
+                className="kahoot-wiggle font-black text-[100px] uppercase text-amber-400 leading-tight" 
+                style={{ 
+                    animationDelay: `${2}s` 
+                  }}
+                > {capitalize(n)}</div>)}
+                <div className="text-[30px] font-black text-amber-600 mt-4">{podium[0].score} WINS</div>
               </div>
-              <div className="bg-amber-600 w-full max-w-[180px] h-64 rounded-t-3xl border-t-8 border-amber-300 shadow-[0_0_60px_rgba(245,158,11,0.4)] flex items-center justify-center text-7xl font-black text-amber-200">1</div>
-            </div>
-          )}
-          {podium[2].names.length > 0 && (
-            <div className="flex flex-col items-center w-full md:w-1/3 order-3">
-              <div className="text-center mb-4 min-h-[60px] flex flex-col justify-end">
-                {podium[2].names.map(n => <div key={n} className="font-bold uppercase text-orange-400 text-sm">{capitalize(n)}</div>)}
-                <div className="text-xs font-black text-orange-600 mt-1">{podium[2].score} WINS</div>
-              </div>
-              <div className="bg-orange-900 w-full max-w-[150px] h-24 rounded-t-3xl border-t-8 border-orange-600 flex items-center justify-center text-3xl font-black text-orange-700">3</div>
+              <div className="bg-amber-600 w-full max-w-[180px] h-50 rounded-t-3xl border-t-8 border-amber-300 shadow-[0_0_60px_rgba(245,158,11,0.4)] flex items-center justify-center text-[100px] font-black text-amber-200">1</div>
             </div>
           )}
         </div>
-          <div className="flex flex-col sm:flex-row gap-4 my-12">
+          <div className="flex flex-col sm:flex-row gap-4">
           <button 
             onClick={() => setTournamentFinished(false)} 
             className="px-10 py-5 border-2 border-white/20 text-white font-black rounded-full hover:bg-white/10 transition-all uppercase tracking-widest text-lg"
@@ -555,7 +543,7 @@ export default function Tournament() {
                       
                       <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
   {courtOrder.map((cId) => {
-    const m = currentMatches[cId];
+    const m = round.matches[cId];
     if (!m) return null;
 
     const isKing = cId === kingCourt;

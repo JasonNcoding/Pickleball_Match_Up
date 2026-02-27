@@ -206,45 +206,32 @@ export default function Tournament() {
     ];
 
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-start text-white p-6 pt-20 font-sans overflow-y-auto">
-        <h1 className="text-5xl font-black italic mb-20 text-amber-400 uppercase tracking-tighter text-center">Final Standings</h1>
-        <div className="flex flex-col md:flex-row items-end justify-center gap-6 w-full max-w-5xl pb-10">
-          {podium[1].names.length > 0 && (
-            <div className="flex flex-col items-center w-full md:w-1/3 order-2 md:order-1">
-              <div className="text-center mb-4 min-h-[60px] flex flex-col justify-end">
-                {podium[1].names.map(n => <div key={n} className="font-bold uppercase text-slate-300 text-sm">{capitalize(n)}</div>)}
-                <div className="text-xs font-black text-slate-500 mt-1">{podium[1].score} WINS</div>
-              </div>
-              <div className="bg-slate-700 w-full max-w-[150px] h-40 rounded-t-3xl border-t-8 border-slate-400 flex items-center justify-center text-4xl font-black text-slate-400">2</div>
-            </div>
-          )}
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-start text-white p-2 pt-10 font-sans overflow-y-auto">
+        <h1 className="text-[70px] font-black italic text-amber-400 uppercase tracking-tighter text-center">Winner</h1>
+        <div className="text-[100px]">🏆</div>
+        <div className="flex flex-col md:flex-row mb-40 items-end justify-center gap-6 w-full max-w-5xl pb-10">
           {podium[0].names.length > 0 && (
             <div className="flex flex-col items-center w-full md:w-1/3 order-1 md:order-2">
-              <div className="text-center mb-4 min-h-[100px] flex flex-col justify-end">
-                {podium[0].names.map(n => <div key={n} className="font-black uppercase text-amber-400 text-xl leading-tight">👑 {capitalize(n)}</div>)}
-                <div className="text-sm font-black text-amber-600 mt-2">{podium[0].score} WINS</div>
+              <div className="text-center mb-10 min-h-[100px] flex flex-col justify-end">
+                {podium[0].names.map(n => 
+                <div key={n} 
+                className="kahoot-wiggle font-black text-[100px] uppercase text-amber-400 leading-tight" 
+                style={{ 
+                    animationDelay: `${0}s` 
+                  }}
+                > {capitalize(n)}</div>)}
+                <div className="text-[30px] font-black text-amber-600 mt-4">{podium[0].score} WINS</div>
               </div>
-              <div className="bg-amber-600 w-full max-w-[180px] h-64 rounded-t-3xl border-t-8 border-amber-300 shadow-[0_0_60px_rgba(245,158,11,0.4)] flex items-center justify-center text-7xl font-black text-amber-200">1</div>
-            </div>
-          )}
-          {podium[2].names.length > 0 && (
-            <div className="flex flex-col items-center w-full md:w-1/3 order-3">
-              <div className="text-center mb-4 min-h-[60px] flex flex-col justify-end">
-                {podium[2].names.map(n => <div key={n} className="font-bold uppercase text-orange-400 text-sm">{capitalize(n)}</div>)}
-                <div className="text-xs font-black text-orange-600 mt-1">{podium[2].score} WINS</div>
-              </div>
-              <div className="bg-orange-900 w-full max-w-[150px] h-24 rounded-t-3xl border-t-8 border-orange-600 flex items-center justify-center text-3xl font-black text-orange-700">3</div>
+              <div className="bg-amber-600 w-full max-w-[180px] h-64 rounded-t-3xl border-t-8 border-amber-300 shadow-[0_0_60px_rgba(245,158,11,0.4)] flex items-center justify-center text-[200px] font-black text-amber-200">1</div>
             </div>
           )}
         </div>
-          
       </div>
-      
     );
   }
   return (
-    <div className="mx-auto p-2 lg:p-10">
-      <header className="flex flex-wrap justify-between items-center gap-4 mb-5">
+    <div className="mx-auto p-2 lg:p-5">
+      <header className="flex flex-wrap justify-between items-center gap-4 mb-2">
         <div>
           <h1 className="text-4xl font-black italic uppercase tracking-tighter">Round {history.length + 1}</h1>
         </div>
@@ -257,10 +244,10 @@ export default function Tournament() {
             const m = currentMatches[cId];
             if (!m) return null;
             return (
-              <div key={cId} className={`bg-white h-fit rounded-[32px] border-2 transition overflow-hidden shadow-sm ${cId === kingCourt ? 'border-amber-400 ring-4 ring-amber-50' : 'border-slate-100'}`}>
+              <div key={cId} className={`h-fit rounded-[32px] border-2 transition overflow-hidden shadow-sm ${cId === kingCourt ? 'border-slate-100' : 'border-slate-100'}`} style={{ backgroundColor: '#e5f5e0' }}>
                 {/* Court Header */}
-                <div className={`py-2 px-4 text-[20px] text-center font-black uppercase tracking-widest ${cId === kingCourt ? 'bg-amber-400 text-slate-900' : cId === bottomCourt ? 'bg-slate-200 text-slate-600' : 'bg-slate-800 text-white'}`}>
-                  Court {cId} {cId === kingCourt ? '👑' : cId === bottomCourt ? '⬇️' : ''}
+                <div className={`px-4 text-[40px] text-center font-black uppercase tracking-widest ${cId === kingCourt ? 'bg-amber-400 text-white' : 'bg-slate-800 text-white'}`} style={{ backgroundColor: cId === kingCourt ? '#9a9ff7' : '#006d2c', color: cId === kingCourt ? '#ffffff' : '#ffffff' }}>
+                  Court {cId} {cId === kingCourt ? '- King Court' : cId === bottomCourt ? '⬇️' : ''}
                 </div>
 
                 {/* Match Grid Area */}
@@ -279,7 +266,7 @@ export default function Tournament() {
                       return (
                         <div 
                           key={teamKey} 
-                          className={`flex flex-col gap-0 rounded-2xl border-2 transition cursor-pointer ${
+                          className={`flex flex-col gap-0 rounded-2xl border-2 border-slate-100 transition cursor-pointer ${
                             m.winner === teamKey ? 'bg-indigo-50 border-indigo-500' : 'bg-slate-50 border-transparent hover:border-slate-200'
                           }`}
                         >
@@ -320,12 +307,14 @@ export default function Tournament() {
         <aside className="space-y-6 w-full">
 
           <div className="bg-slate-900 text-white p-8 rounded-[40px] shadow-2xl">
-            <h2 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-center">Leaderboard</h2>
+            <h2 className="text-[30px] text-amber-300 font-black italic mb-2 tracking-tighter text-center" >Leaderboard</h2>
             <div className="space-y-4">
               {getLeaderboard().slice(0, 5).map((e, i) => (
-                <div key={e.name} className="flex text-[20px] justify-between border-b border-slate-800 pb-2">
-                  <span className="font-bold text-slate-400">{i+1}. {capitalize(e.name)}</span>
-                  <span className="text-amber-400 font-bold">{e.winCount}</span>
+                <div key={e.name} className="flex text-[25px] justify-between border-b border-slate-800 pb-2">
+                  
+
+                  <span className=" font-bold text-white" >{i+1}. {capitalize(e.name)}</span>
+                  <span className={`font-bold  text-white`}>{e.winCount}</span>
                 </div>
               ))}
             </div>
