@@ -25,3 +25,46 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+@keyframes zoomOut {
+   0% {
+     transform: scale(0.1);
+   }
+
+   50% {
+     transform: scale(4);
+   }
+
+   100% {
+     transform: scale(1);
+   }
+}
+
+@keyframes kahootWiggle {
+  0%, 100% { 
+    transform: translate3d(0, 0, 0) rotate(0deg); 
+  }
+  25% { 
+    transform: translate3d(40px, 20px, 0) rotate(8deg); 
+  }
+
+  50% { 
+    transform: translate3d(0, 0, 0) rotate(0deg); 
+  }
+
+  75% { 
+    transform: translate3d(-40px, 20px, 0) rotate(-8deg); 
+  }
+}
+
+
+.kahoot-wiggle {
+  display: inline-block;
+
+  animation: 
+    zoomOut 3s ease-out forwards,
+    kahootWiggle 1.3s linear infinite 3s;
+  will-change: transform;
+  animation-composition: add;
+  -webkit-font-smoothing: antialiased;
+}
