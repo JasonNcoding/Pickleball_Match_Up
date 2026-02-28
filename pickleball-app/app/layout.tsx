@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "👑 Pickleholic KOC 👑",
+  title: "Rally To The Top",
   description: "King Of Court Pickleholic-format",
 };
 

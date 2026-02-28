@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import React, { useState, useMemo, useEffect } from 'react';
 import { Player,Match, Round } from '@/app/lib/definitions';
 import { saveTournamentState,getTournamentState,clearTournament } from '@/app/lib/actions';
+import { firePodiumConfetti } from '@/app/ui/confetti';
 
 
 export default function Tournament() {
@@ -190,6 +191,20 @@ export default function Tournament() {
       winCount 
     })).sort((a, b) => b.winCount - a.winCount);
   };
+
+  useEffect(() => {
+  if (tournamentFinished) {
+    // Fire once immediately
+    firePodiumConfetti();
+    
+    // Optional: Fire a second "burst" 2 seconds later for extra hype
+    const timer = setTimeout(() => {
+      firePodiumConfetti();
+    }, 2000);
+
+    return () => clearTimeout(timer);
+  }
+}, [tournamentFinished]);
 
   if (tournamentFinished) {
     const stats = getLeaderboard();
