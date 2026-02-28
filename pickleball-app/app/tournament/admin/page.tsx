@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import React, { useState, useMemo, useEffect } from 'react';
 import { Player,Match, Round } from '@/app/lib/definitions';
 import { saveTournamentState,getTournamentState,clearTournament } from '@/app/lib/actions';
+import { firePodiumConfetti } from '@/app/ui/confetti';
 
 
 export default function Tournament() {
@@ -428,7 +429,7 @@ export default function Tournament() {
           <button onClick={() => setShowHistoryModal(true)} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-slate-200 transition">LOG</button>
           <button onClick={() => { setIsEditMode(!isEditMode); setSwapSelection(null); }}
             className={`px-6 py-2 rounded-xl font-bold transition ${isEditMode ? 'bg-orange-400 hover:bg-orange-500 text-white shadow-lg transition' : 'hover:bg-slate-200 bg-slate-100 text-slate-600 transition'}`}>{isEditMode ? 'FINISH SWAP' : 'SWAP'}</button>
-          <button onClick={() => setTournamentFinished(true)} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-emerald-500 hover:text-white transition ">FINISH</button>
+          <button onClick={() => { setTournamentFinished(true); firePodiumConfetti(); }} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-emerald-500 hover:text-white transition ">FINISH</button>
           <button onClick={async () => {if(confirm("R U Sure, Reset?")) {await clearTournament(); localStorage.removeItem('kotc_session'); location.reload();}}} className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition rounded-xl font-black text-xs border border-red-100">RESET</button>
         </div>
       </header>
