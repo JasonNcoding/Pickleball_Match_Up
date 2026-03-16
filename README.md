@@ -7,6 +7,14 @@ A  Next.js application for pickleball tournament tracking where it has two main 
 ## Tech Stack:
 Next.js, Supabase, Vercel. 
 
+## Result:
+
+Admin View:
+![alt text](<Admin View.png>) 
+
+Customer View:
+![alt text](<Customer View.png>)
+
 ## How to use:
 
 Clone this repo and use below bash command
