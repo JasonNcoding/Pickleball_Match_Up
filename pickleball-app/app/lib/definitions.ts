@@ -5,20 +5,22 @@ export type User = {
   password: string;
 };
 
+export interface Round {
+  id: number; // TODO remove
+  matches: Record<string, Match>;
+  waiting: string[];
+}
+
+export interface Match {
+  id: string;
+  teamA: string[];
+  teamB: string[];
+  winner: 'A' | 'B' | null;
+  score?: string | null;
+}
+
 export interface Player {
   id: string;
   name: string;
   rating: number;
-}
-
-export interface Match {
-  teamA: string[];
-  teamB: string[];
-  winner: 'A' | 'B' | null;
-}
-
-export interface Round {
-  id: number;
-  matches: Record<string, Match>;
-  waiting: string[];
 }
