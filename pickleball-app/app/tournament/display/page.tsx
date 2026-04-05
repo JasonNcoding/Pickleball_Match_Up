@@ -1,17 +1,27 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
-import React, { useState, useMemo, useEffect } from 'react';
-import { Player,Match, Round } from '@/app/lib/definitions';
-import { saveTournamentState,getTournamentState,clearTournament } from '@/app/lib/actions';
+import React, { useState, useEffect } from 'react';
+import { Player, Match, Round } from '@/app/lib/definitions';
+import { getTournamentState } from '@/app/lib/actions';
 import { firePodiumConfetti } from '@/app/ui/confetti';
+import { gameMode } from '@/app/lib/tournament_mode/gameMode';
+import { DuprTournamentState, getDuprFinalLeaderboard, getDuprStandings } from '@/app/lib/tournament_mode/duprTournament';
+import { formatDuprPhaseLabel } from '@/app/lib/game_modes/dupr/view';
+import { formatRallyRoundLabel } from '@/app/lib/game_modes/rally/view';
+import {
+  calculateLeaderboard,
+  generateRoundPairings,
+  hasPlayedTogetherInHistory,
+  reconcileCourtOrder,
+} from '@/app/lib/tournament-engine';
 
 
 export default function Tournament() {
-  const router = useRouter();
-    const [isHydrated, setIsHydrated] = useState(false);
+  const [isHydrated, setIsHydrated] = useState(false);
       const [setupComplete, setSetupComplete] = useState(false);
       const [tournamentFinished, setTournamentFinished] = useState(false);
+      const [mode, setMode] = useState<gameMode>(gameMode.RALLYTOTHETOP);
+      const [duprState, setDuprState] = useState<DuprTournamentState | null>(null);
       const [isEditMode, setIsEditMode] = useState(false);
       const [showHistoryModal, setShowHistoryModal] = useState(false);
       const [swapSelection, setSwapSelection] = useState<{courtId?: string, team?: 'A'|'B', index?: number, isWaitlist?: boolean, pId?: string} | null>(null);
@@ -30,14 +40,16 @@ export default function Tournament() {
   const loadData = async () => {
     const data = await getTournamentState();
     if (data) {
-      setSetupComplete(data.setupComplete);
-      setTournamentFinished(data.tournamentFinished);
-      setSelectedCourts(data.selectedCourts);
-      setCourtOrder(data.courtOrder || data.selectedCourts);
-      setPlayers(data.players);
-      setWaitingPlayers(data.waitingPlayers);
-      setCurrentMatches(data.currentMatches);
-      setHistory(data.history);
+      setSetupComplete(data.setupComplete ?? false);
+      setTournamentFinished(data.tournamentFinished ?? false);
+      setMode((data.mode ?? data.tournamentType ?? gameMode.RALLYTOTHETOP) as gameMode);
+      setSelectedCourts(data.selectedCourts ?? []);
+      setCourtOrder(data.courtOrder ?? data.selectedCourts ?? []);
+      setPlayers(data.players ?? []);
+      setWaitingPlayers(data.waitingPlayers ?? []);
+      setCurrentMatches(data.currentMatches ?? {});
+      setHistory(data.history ?? []);
+      setDuprState((data.duprState as DuprTournamentState) ?? null);
     }
     setIsHydrated(true);
   };
@@ -59,15 +71,15 @@ export default function Tournament() {
   
   
   useEffect(() => {
-    setCourtOrder(prev => {
-      const newBase = selectedCourts.filter(c => prev.includes(c));
-      const added = selectedCourts.filter(c => !prev.includes(c));
-      return [...newBase, ...added];
-    });
+    setCourtOrder((prev) => reconcileCourtOrder(prev, selectedCourts));
   }, [selectedCourts]);
 
   const kingCourt = courtOrder[0];
   const bottomCourt = courtOrder[courtOrder.length - 1];
+  const isDuprMode = mode === gameMode.DUPR;
+  const activeCourts = isDuprMode ? selectedCourts : courtOrder;
+
+  const duprRoundLabel = formatDuprPhaseLabel(duprState);
 
   const moveCourt = (index: number, direction: 'up' | 'down') => {
     const newOrder = [...courtOrder];
@@ -80,72 +92,22 @@ export default function Tournament() {
   const capitalize = (str: string) => str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
   const isRoundOne = history.length === 0;
 
-  const getPartnershipCount = (p1: string, p2: string) => {
-    let count = 0;
-    history.forEach(round => {
-      Object.values(round.matches).forEach(m => {
-        if ((m.teamA.includes(p1) && m.teamA.includes(p2)) || (m.teamB.includes(p1) && m.teamB.includes(p2))) count++;
-      });
-    });
-    return count;
-  };
-
-  const hasPlayedTogetherRecently = (p1: string, p2: string) => {
-    if (history.length === 0) return false;
-    // const lastRound = history[history.length - 1];
-    // return Object.values(lastRound.matches).some(m => (m.teamA.includes(p1) && m.teamA.includes(p2)) || (m.teamB.includes(p1) && m.teamB.includes(p2)));
-    return history.some(round => 
-    Object.values(round.matches).some(m => 
-      (m.teamA.includes(p1) && m.teamA.includes(p2)) || 
-      (m.teamB.includes(p1) && m.teamB.includes(p2))
-    )
-  );
-  
-  };
+  const hasPlayedTogetherRecently = (p1: string, p2: string) =>
+    hasPlayedTogetherInHistory(history, p1, p2);
 
   const generatePairings = (isFirst: boolean, roster: Player[], courts: string[]) => {
-    const needed = courts.length * 4;
-    let playingIds: string[] = [];
-    let waitingIds: string[] = [];
-
-    if (isFirst) {
-      const sortedIds = [...roster].sort((a, b) => a.rating - b.rating).map(p => p.id);
-      playingIds = sortedIds.slice(0, needed);
-      waitingIds = sortedIds.slice(needed);
-    } else {
-      const lastRound = currentMatches;
-      const lastWaiting = [...waitingPlayers];
-      const rankedPool: string[][] = [];
-      courtOrder.forEach((cId) => {
-        const m = lastRound[cId];
-        rankedPool.push(m.winner === 'A' ? m.teamA : m.teamB);
-        rankedPool.push(m.winner === 'A' ? m.teamB : m.teamA);
-      });
-      const newOrder: string[][] = [rankedPool[0]];
-      for (let i = 1; i < courtOrder.length; i++) {
-        newOrder.push(rankedPool[i * 2], rankedPool[(i - 1) * 2 + 1]);
-      }
-      const totalPool = [...newOrder.flat(), ...lastWaiting, ...rankedPool[rankedPool.length - 1]];
-      playingIds = totalPool.slice(0, needed);
-      waitingIds = totalPool.slice(needed);
-    }
-
-    const newMatches: Record<string, Match> = {};
-    courtOrder.forEach((cId, i) => {
-      const p = playingIds.slice(i * 4, (i + 1) * 4);
-      const combos = [
-        { teamA: [p[0], p[3]], teamB: [p[1], p[2]] },
-        { teamA: [p[0], p[2]], teamB: [p[1], p[3]] },
-        { teamA: [p[0], p[1]], teamB: [p[2], p[3]] }
-      ];
-      const scored = combos.map(c => ({
-        ...c,
-        score: (hasPlayedTogetherRecently(c.teamA[0], c.teamA[1]) ? 100 : 0) + (hasPlayedTogetherRecently(c.teamB[0], c.teamB[1]) ? 100 : 0) + getPartnershipCount(c.teamA[0], c.teamA[1]) + getPartnershipCount(c.teamB[0], c.teamB[1])
-      })).sort((a, b) => a.score - b.score);
-      newMatches[cId] = { ...scored[0], winner: null };
+    const result = generateRoundPairings({
+      isFirst,
+      roster,
+      courts,
+      currentMatches,
+      waitingPlayers,
+      courtOrder,
+      history,
     });
-    setCurrentMatches(newMatches);
-    setWaitingPlayers(waitingIds);
+
+    setCurrentMatches(result.matches);
+    setWaitingPlayers(result.waitingIds);
   };
 
   const handleSwap = (target: {courtId?: string, team?: 'A'|'B', index?: number, isWaitlist?: boolean, pId?: string}) => {
@@ -169,28 +131,9 @@ export default function Tournament() {
   };
 
   // --- UPDATED LEADERBOARD LOGIC ---
-  const getLeaderboard = () => {
-    const wins: Record<string, number> = {};
-    players.forEach(p => wins[p.id] = 0);
-    
-    history.forEach((round, index) => {
-      // index 0 = Round 1 (Ignore)
-      // index 1 = Round 2, index 2 = Round 3, etc.
-      if (index >= 1) { 
-        const km = round.matches[kingCourt];
-        if (km?.winner) {
-          const winners = km.winner === 'A' ? km.teamA : km.teamB;
-          winners.forEach(wId => {
-            wins[wId] = (wins[wId] || 0) + 1;
-          });
-        }
-      }
-    });
-    return Object.entries(wins).map(([id, winCount]) => ({ 
-      name: players.find(p => p.id === id)?.name || id, 
-      winCount 
-    })).sort((a, b) => b.winCount - a.winCount);
-  };
+  const getLeaderboard = () => calculateLeaderboard({ players, history, kingCourt });
+  const duprStandings = duprState ? getDuprStandings(duprState) : [];
+  const duprFinalLeaderboard = duprState ? getDuprFinalLeaderboard(duprState) : [];
 
   useEffect(() => {
   if (tournamentFinished) {
@@ -207,7 +150,9 @@ export default function Tournament() {
 }, [tournamentFinished]);
 
   if (tournamentFinished) {
-    const stats = getLeaderboard();
+    const stats = isDuprMode
+      ? duprFinalLeaderboard.map((entry) => ({ name: entry.teamName, winCount: entry.wins }))
+      : getLeaderboard();
     const grouped = stats.reduce((acc, curr) => {
       if (!acc[curr.winCount]) acc[curr.winCount] = [];
       acc[curr.winCount].push(curr.name);
@@ -235,7 +180,9 @@ export default function Tournament() {
                     animationDelay: `${0}s` 
                   }}
                 > {capitalize(n)}</div>)}
-                <div className="text-[30px] font-black text-amber-600 mt-4">{podium[0].score} WINS</div>
+                <div className="text-[30px] font-black text-amber-600 mt-4">
+                  {isDuprMode ? 'KNOCKOUT CHAMPION' : `${podium[0].score} WINS`}
+                </div>
               </div>
               <div className="bg-amber-600 w-full max-w-[180px] h-64 rounded-t-3xl border-t-8 border-amber-300 shadow-[0_0_60px_rgba(245,158,11,0.4)] flex items-center justify-center text-[200px] font-black text-amber-200">1</div>
             </div>
@@ -248,16 +195,32 @@ export default function Tournament() {
     <div className="mx-auto p-2 lg:p-5">
       <header className="flex flex-wrap justify-between items-center gap-4 mb-2">
         <div>
-          <h1 className="text-4xl font-black italic uppercase tracking-tighter">Round {history.length + 1}</h1>
+          <h1 className="text-4xl font-black italic uppercase tracking-tighter">
+            {isDuprMode ? duprRoundLabel : formatRallyRoundLabel(history.length + 1)}
+          </h1>
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+            {isDuprMode ? `Mode: ${mode}` : `King: Court ${kingCourt} • Bottom: Court ${bottomCourt}`}
+          </p>
         </div>
         
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-6 gap-10">
         <div className="lg:col-span-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-6">
-          {courtOrder.map((cId) => {
+          {activeCourts.map((cId) => {
             const m = currentMatches[cId];
-            if (!m) return null;
+            if (!m) {
+              return (
+                <div key={cId} className="h-fit rounded-[32px] border-2 border-dashed border-slate-300 overflow-hidden bg-white">
+                  <div className="px-4 text-[40px] text-center font-black uppercase tracking-widest bg-slate-200 text-slate-700">
+                    Court {cId}
+                  </div>
+                  <div className="p-12 text-center">
+                    <p className="text-[24px] font-black uppercase tracking-widest text-slate-400">Waiting For Next Match</p>
+                  </div>
+                </div>
+              );
+            }
             return (
               <div key={cId} className={`h-fit rounded-[32px] border-2 transition overflow-hidden shadow-sm ${cId === kingCourt ? 'border-slate-100' : 'border-slate-100'}`} style={{ backgroundColor: '#e5f5e0' }}>
                 {/* Court Header */}
@@ -324,14 +287,19 @@ export default function Tournament() {
           <div className="bg-slate-900 text-white p-8 rounded-[40px] shadow-2xl">
             <h2 className="text-[30px] text-amber-300 font-black italic mb-2 tracking-tighter text-center" >Leaderboard</h2>
             <div className="space-y-4">
-              {getLeaderboard().slice(0, 5).map((e, i) => (
-                <div key={e.name} className="flex text-[25px] justify-between border-b border-slate-800 pb-2">
-                  
-
-                  <span className=" font-bold text-white" >{i+1}. {capitalize(e.name)}</span>
-                  <span className={`font-bold  text-white`}>{e.winCount}</span>
-                </div>
-              ))}
+              {isDuprMode
+                ? duprFinalLeaderboard.slice(0, 5).map((entry, i) => (
+                    <div key={entry.teamId} className="flex text-[25px] justify-between border-b border-slate-800 pb-2">
+                      <span className="font-bold text-white">{i + 1}. {entry.teamName}</span>
+                      <span className="font-bold text-white">{entry.wins}-{entry.losses}</span>
+                    </div>
+                  ))
+                : getLeaderboard().slice(0, 5).map((e, i) => (
+                    <div key={e.name} className="flex text-[25px] justify-between border-b border-slate-800 pb-2">
+                      <span className="font-bold text-white">{i + 1}. {capitalize(e.name)}</span>
+                      <span className="font-bold text-white">{e.winCount}</span>
+                    </div>
+                  ))}
             </div>
           </div>
           

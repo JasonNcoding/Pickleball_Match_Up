@@ -7,6 +7,7 @@ import clsx from 'clsx';
 
 const links = [
   { name: 'Dashboard', href: '/tournament/admin'},
+  { name: 'History', href: '/tournament/admin/history' },
 ];
 
 const displayLink = { name: 'Display', href: '/tournament/display'}
