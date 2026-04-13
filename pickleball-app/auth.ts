@@ -5,7 +5,9 @@ import { z } from 'zod';
 import bcrypt from 'bcrypt';
 import postgres from 'postgres';
  
-const sql = postgres(process.env.POSTGRES_URL!, {ssl: 'require'});
+const sql = postgres(process.env.POSTGRES_URL!, {
+  ssl: process.env.POSTGRES_URL?.includes('localhost') ? false : 'require',
+});
  
 async function getUser(email: string) {
   try {

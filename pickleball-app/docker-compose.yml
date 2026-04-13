@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pickleball_dev_db
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: pickleball_dev
+      POSTGRES_USER: pickleball_dev
+      POSTGRES_PASSWORD: devpass123
+    volumes:
+      - pickleball_dev_data:/var/lib/postgresql/data
+      - ./scripts/seed-dev.sql:/docker-entrypoint-initdb.d/01-seed.sql
+
+volumes:
+  pickleball_dev_data:

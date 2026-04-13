@@ -76,7 +76,7 @@ export default function Tournament() {
 
   const kingCourt = courtOrder[0];
   const bottomCourt = courtOrder[courtOrder.length - 1];
-  const isDuprMode = mode === gameMode.DUPR;
+  const isDuprMode = mode === gameMode.GROUP_KNOCKOUT;
   const activeCourts = isDuprMode ? selectedCourts : courtOrder;
 
   const duprRoundLabel = formatDuprPhaseLabel(duprState);

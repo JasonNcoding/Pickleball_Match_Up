@@ -3,7 +3,7 @@ import {
   generateRoundPairings,
   hasPlayedTogetherInHistory,
   reconcileCourtOrder,
-} from '@/app/lib/tournament-engine';
+} from '@/app/lib/engines/rally';
 
 export const rallyDomain = {
   generatePairings: generateRoundPairings,

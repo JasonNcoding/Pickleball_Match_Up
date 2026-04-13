@@ -6,16 +6,21 @@ import { signOut } from '@/auth';
 import postgres from 'postgres';
 import type { Match, Round } from '@/app/lib/definitions';
  
+const isLocalDb = process.env.POSTGRES_URL?.includes('localhost');
 const sql = postgres(process.env.POSTGRES_URL!, {
-  ssl: 'require', 
+  ssl: isLocalDb ? false : 'require',
   prepare: true, // Tells the DB to pre-compile the SQL logic
   idle_timeout: 20,
-  max: 1});
+  max: 1
+});
 import { revalidatePath } from 'next/cache';
 
 interface TournamentStateSnapshot {
   mode?: string;
   tournamentType?: string;
+  tournamentName?: string;
+  tournamentDate?: string;
+  courtCount?: number;
   duprTeamMode?: 'manual' | 'random';
   duprKnockoutStage?: 'SEMIFINAL' | 'QUARTERFINAL';
   duprState?: unknown;
@@ -220,7 +225,6 @@ export async function saveTournamentState(state: any) {
   if (!state) return { error: 'No state provided' };
   
   try {
-    // const stateString = JSON.stringify(state);
     await sql`
       INSERT INTO tournament (id, state, slug, created_at)
       VALUES ('1', ${state}, 'main_session', NOW())
@@ -398,4 +402,80 @@ export async function authenticate(
 
 export async function handleSignOut() {
   await signOut({ redirectTo: '/' });
+}
+
+export async function migrateGameModeLabels(): Promise<{
+  success: boolean;
+  updatedTournament: number;
+  updatedHistory: number;
+  error?: string;
+}> {
+  try {
+    // Update top-level mode field
+    const r1 = await sql`
+      UPDATE tournament
+      SET state = jsonb_set(state, '{mode}', '"Group Knockout"')
+      WHERE state->>'mode' = 'DUPR Tournament'
+    `;
+    // Update top-level tournamentType field
+    const r2 = await sql`
+      UPDATE tournament
+      SET state = jsonb_set(state, '{tournamentType}', '"Group Knockout"')
+      WHERE state->>'tournamentType' = 'DUPR Tournament'
+    `;
+    // Update nested duprState.mode
+    const r3 = await sql`
+      UPDATE tournament
+      SET state = jsonb_set(state, '{duprState,mode}', '"Group Knockout"')
+      WHERE state->'duprState'->>'mode' = 'DUPR Tournament'
+    `;
+    // Update nested duprInitialState.mode
+    const r4 = await sql`
+      UPDATE tournament
+      SET state = jsonb_set(state, '{duprInitialState,mode}', '"Group Knockout"')
+      WHERE state->'duprInitialState'->>'mode' = 'DUPR Tournament'
+    `;
+
+    await ensureTournamentHistoryTable();
+
+    const r5 = await sql`
+      UPDATE tournament_history
+      SET state = jsonb_set(state, '{mode}', '"Group Knockout"')
+      WHERE state->>'mode' = 'DUPR Tournament'
+    `;
+    const r6 = await sql`
+      UPDATE tournament_history
+      SET state = jsonb_set(state, '{tournamentType}', '"Group Knockout"')
+      WHERE state->>'tournamentType' = 'DUPR Tournament'
+    `;
+    const r7 = await sql`
+      UPDATE tournament_history
+      SET state = jsonb_set(state, '{duprState,mode}', '"Group Knockout"')
+      WHERE state->'duprState'->>'mode' = 'DUPR Tournament'
+    `;
+    const r8 = await sql`
+      UPDATE tournament_history
+      SET state = jsonb_set(state, '{duprInitialState,mode}', '"Group Knockout"')
+      WHERE state->'duprInitialState'->>'mode' = 'DUPR Tournament'
+    `;
+
+    const updatedTournament =
+      (r1.count ?? 0) + (r2.count ?? 0) + (r3.count ?? 0) + (r4.count ?? 0);
+    const updatedHistory =
+      (r5.count ?? 0) + (r6.count ?? 0) + (r7.count ?? 0) + (r8.count ?? 0);
+
+    revalidatePath('/tournament/admin');
+    revalidatePath('/tournament/admin/history');
+    revalidatePath('/tournament/history');
+
+    return { success: true, updatedTournament, updatedHistory };
+  } catch (error) {
+    console.error('MIGRATION_ERROR:', error);
+    return {
+      success: false,
+      updatedTournament: 0,
+      updatedHistory: 0,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }

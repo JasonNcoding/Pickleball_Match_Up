@@ -1,27 +1,28 @@
 import {
-  applyMatchWinner,
-  createFixedPartnerTeams,
-  getDuprFinalLeaderboard,
-  getDuprStandings,
-  initializeDuprTournament,
-  maybeAdvanceDuprPhase,
-  type DuprTeamStanding,
-  type DuprTournamentState,
-} from '@/app/lib/tournament_mode/duprTournament';
+  createTeams,
+  getFinalLeaderboard,
+  getStandings,
+  initialize,
+  advancePhase,
+  applyResult,
+  type GroupsKnockoutTeamStanding,
+  type GroupsKnockoutState,
+} from '@/app/lib/engines/groups-knockout';
 
-export type { DuprTeamStanding, DuprTournamentState };
+export type DuprTeamStanding = GroupsKnockoutTeamStanding;
+export type DuprTournamentState = GroupsKnockoutState;
 
 export const duprDomain = {
-  initialize: initializeDuprTournament,
-  applyWinner: applyMatchWinner,
-  advancePhase: maybeAdvanceDuprPhase,
-  createTeams: createFixedPartnerTeams,
+  initialize,
+  applyWinner: applyResult,
+  advancePhase,
+  createTeams,
 };
 
-export function buildDuprLeaderboard(state: DuprTournamentState): DuprTeamStanding[] {
-  return getDuprStandings(state);
+export function buildDuprLeaderboard(state: GroupsKnockoutState): GroupsKnockoutTeamStanding[] {
+  return getStandings(state);
 }
 
-export function buildDuprFinalLeaderboard(state: DuprTournamentState): DuprTeamStanding[] {
-  return getDuprFinalLeaderboard(state);
+export function buildDuprFinalLeaderboard(state: GroupsKnockoutState): GroupsKnockoutTeamStanding[] {
+  return getFinalLeaderboard(state);
 }

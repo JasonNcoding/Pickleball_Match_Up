@@ -1,12 +1,78 @@
 'use client';
 
-import { MouseEvent, ReactNode, useState } from 'react';
-import { DndContext, DragEndEvent, useDraggable, useDroppable } from '@dnd-kit/core';
+import { MouseEvent, useState } from 'react';
+import {
+  DndContext,
+  DragEndEvent,
+  DragStartEvent,
+  DragOverlay,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  useDraggable,
+  useDroppable,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { gameMode } from '@/app/lib/tournament_mode/gameMode';
-import { useTournamentController } from '@/app/lib/useTournament';
+import { useTournamentController } from '@/app/lib/store';
 import { formatDuprPhaseLabel } from '@/app/lib/game_modes/dupr/view';
 import { formatRallyRoundLabel } from '@/app/lib/game_modes/rally/view';
+import { migrateGameModeLabels } from '@/app/lib/actions';
+
+function MigrationToolSection() {
+  const [status, setStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [result, setResult] = useState<string>('');
+
+  const handleMigrate = async () => {
+    setStatus('running');
+    try {
+      const res = await migrateGameModeLabels();
+      if (res.success) {
+        setResult(
+          `Done — ${res.updatedTournament} tournament row(s), ${res.updatedHistory} history row(s) updated.`,
+        );
+        setStatus('done');
+      } else {
+        setResult(res.error ?? 'Unknown error');
+        setStatus('error');
+      }
+    } catch (e) {
+      setResult(e instanceof Error ? e.message : String(e));
+      setStatus('error');
+    }
+  };
+
+  if (status === 'done') return null;
+
+  return (
+    <section className="bg-amber-50 border border-amber-200 p-4 rounded-[20px] space-y-2">
+      <h3 className="text-xs font-black text-amber-700 uppercase tracking-widest">
+        One-Time DB Migration
+      </h3>
+      <p className="text-[11px] text-amber-600">
+        Run once to rename any saved &ldquo;DUPR Tournament&rdquo; records to &ldquo;Group Knockout&rdquo; in the database.
+        Safe to run multiple times.
+      </p>
+      <button
+        type="button"
+        onClick={handleMigrate}
+        disabled={status === 'running'}
+        className="px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-white text-xs font-black uppercase tracking-widest rounded-xl transition"
+      >
+        {status === 'running' ? 'Running…' : 'Run Migration'}
+      </button>
+      {status === 'error' && (
+        <p className="text-[11px] text-red-600 font-bold">{result}</p>
+      )}
+    </section>
+  );
+}
 
 type SwapSlot = {
   courtId: string;
@@ -14,94 +80,49 @@ type SwapSlot = {
   index: number;
 };
 
-const slotId = (slot: SwapSlot) => `slot:${slot.courtId}:${slot.team}:${slot.index}`;
-const parseSlotId = (id: string): SwapSlot | null => {
-  const parts = id.split(':');
-  if (parts.length !== 4 || parts[0] !== 'slot') return null;
-  const index = Number(parts[3]);
-  if (!Number.isInteger(index)) return null;
-  const team = parts[2];
-  if (team !== 'A' && team !== 'B') return null;
-  return { courtId: parts[1], team, index };
-};
-
-const setupSlotId = (index: number) => `setup-slot:${index}`;
-const parseSetupSlotId = (id: string): number | null => {
-  const parts = id.split(':');
-  if (parts.length !== 2 || parts[0] !== 'setup-slot') return null;
-  const index = Number(parts[1]);
-  return Number.isInteger(index) ? index : null;
-};
-
-const unassignedMatchId = (roundIndex: number, matchId: string) => `unassigned:${roundIndex}:${matchId}`;
-const parseUnassignedMatchId = (id: string): { roundIndex: number; matchId: string } | null => {
-  const parts = id.split(':');
-  if (parts.length < 3 || parts[0] !== 'unassigned') return null;
-  const roundIndex = Number(parts[1]);
-  if (!Number.isInteger(roundIndex)) return null;
-  return { roundIndex, matchId: parts.slice(2).join(':') };
-};
-
-const courtDropId = (courtId: string) => `court-drop:${courtId}`;
-const parseCourtDropId = (id: string): string | null => (id.startsWith('court-drop:') ? id.replace('court-drop:', '') : null);
-
-function DraggablePlayerSlot({
-  id,
+function PlayerSlot({
   text,
   isEditMode,
   isActive,
   isDisabled,
   onClick,
 }: {
-  id: string;
   text: string;
   isEditMode: boolean;
   isActive: boolean;
   isDisabled: boolean;
   onClick: (e: MouseEvent<HTMLSpanElement>) => void;
 }) {
-  const draggable = useDraggable({
-    id,
-    disabled: !isEditMode || isDisabled,
-  });
-  const droppable = useDroppable({
-    id,
-    disabled: !isEditMode || isDisabled,
-  });
-  const setNodeRef = (node: HTMLElement | null) => {
-    draggable.setNodeRef(node);
-    droppable.setNodeRef(node);
-  };
-
   return (
     <span
-      ref={setNodeRef}
-      style={{
-        transform: CSS.Translate.toString(draggable.transform),
-        zIndex: draggable.isDragging ? 999 : undefined,
-        touchAction: 'none',
-      }}
       onClick={onClick}
-      {...(isEditMode && !isDisabled ? draggable.listeners : {})}
-      {...(isEditMode && !isDisabled ? draggable.attributes : {})}
       className={`w-full text-center text-[20px] py-4 rounded-xl font-bold truncate transition-colors ${
-        isEditMode ? 'bg-orange-100 text-orange-800 cursor-grab active:cursor-grabbing' : ''
-      } ${isActive ? 'bg-orange-600 text-white shadow-md' : ''} ${isDisabled ? 'opacity-20 grayscale' : ''} ${
-        draggable.isDragging ? 'ring-2 ring-indigo-400 scale-[1.02] shadow-lg relative' : ''
-      }`}
+        isEditMode && !isDisabled ? 'cursor-pointer' : ''
+      } ${
+        isActive
+          ? 'bg-orange-600 text-white shadow-md ring-2 ring-orange-400'
+          : isEditMode && !isDisabled
+          ? 'bg-orange-100 text-orange-800 hover:bg-orange-200'
+          : ''
+      } ${isDisabled ? 'opacity-20 grayscale' : ''}`}
     >
       {text}
     </span>
   );
 }
 
-function SetupDraggablePlayerSlot({
+function SetupPlayerSlot({
   id,
   slotNumber,
   playerName,
   playerRating,
   onNameChange,
   onRatingChange,
+  onMoveUp,
+  onMoveDown,
+  canMoveUp,
+  canMoveDown,
+  isActivelyDragging = false,
 }: {
   id: string;
   slotNumber: number;
@@ -109,37 +130,73 @@ function SetupDraggablePlayerSlot({
   playerRating: string | number;
   onNameChange: (value: string) => void;
   onRatingChange: (value: string) => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  isActivelyDragging?: boolean;
 }) {
-  const draggable = useDraggable({ id });
-  const droppable = useDroppable({ id });
-  const setNodeRef = (node: HTMLElement | null) => {
-    draggable.setNodeRef(node);
-    droppable.setNodeRef(node);
+  // Draggable — provides drag handle attributes/listeners
+  const { attributes, listeners, setNodeRef: setDragRef, isDragging } = useDraggable({ id });
+  // Droppable — independently tracks when something hovers over this slot
+  const { setNodeRef: setDropRef, isOver } = useDroppable({ id });
+
+  // Merge both refs onto the same element
+  const setRef = (el: HTMLElement | null) => {
+    setDragRef(el);
+    setDropRef(el);
   };
 
   return (
     <div
-      ref={setNodeRef}
-      style={{
-        transform: CSS.Translate.toString(draggable.transform),
-        zIndex: draggable.isDragging ? 999 : undefined,
-        touchAction: 'none',
-      }}
-      className={`p-2 rounded-lg bg-slate-50 border border-slate-100 space-y-2 ${
-        droppable.isOver ? 'ring-2 ring-indigo-300 border-indigo-300' : ''
+      ref={setRef}
+      className={`p-2 rounded-lg border space-y-2 transition-colors ${
+        isDragging
+          ? 'opacity-30 border-slate-100 bg-slate-50'
+          : isOver
+          ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-300'
+          : 'bg-slate-50 border-slate-100'
       }`}
     >
       <div className="flex items-center justify-between">
-        <p className="text-[10px] font-black uppercase text-slate-400">Player {slotNumber}</p>
-        <button
-          type="button"
-          {...draggable.listeners}
-          {...draggable.attributes}
-          className="px-2 py-1 rounded-md bg-white border border-slate-200 text-[9px] font-black uppercase text-slate-500 cursor-grab active:cursor-grabbing"
-          title="Drag to swap player slot"
-        >
-          Drag
-        </button>
+        <div className="flex items-center gap-1">
+          {/* Drag handle */}
+          <button
+            type="button"
+            {...attributes}
+            {...listeners}
+            className="cursor-grab active:cursor-grabbing p-1 rounded text-slate-300 hover:text-slate-500 hover:bg-slate-200 touch-none"
+            title="Drag to swap"
+            tabIndex={-1}
+          >
+            <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
+              <circle cx="3" cy="3" r="1.5"/><circle cx="9" cy="3" r="1.5"/>
+              <circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/>
+              <circle cx="3" cy="13" r="1.5"/><circle cx="9" cy="13" r="1.5"/>
+            </svg>
+          </button>
+          <p className="text-[10px] font-black uppercase text-slate-400">Player {slotNumber}</p>
+        </div>
+        <div className="flex gap-1">
+          <button
+            type="button"
+            onClick={onMoveUp}
+            disabled={!canMoveUp}
+            className="p-1 rounded-md bg-white border border-slate-200 text-[11px] font-black text-slate-500 disabled:opacity-30"
+            title="Move up"
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            onClick={onMoveDown}
+            disabled={!canMoveDown}
+            className="p-1 rounded-md bg-white border border-slate-200 text-[11px] font-black text-slate-500 disabled:opacity-30"
+            title="Move down"
+          >
+            ↓
+          </button>
+        </div>
       </div>
       <input
         value={playerName}
@@ -160,56 +217,171 @@ function SetupDraggablePlayerSlot({
   );
 }
 
-function DraggableUnassignedMatch({
-  id,
-  label,
+// Rendered inside DragOverlay — a static clone that follows the cursor.
+function SetupPlayerSlotOverlay({
+  playerName,
+  playerRating,
 }: {
-  id: string;
-  label: string;
+  playerName: string;
+  playerRating: string | number;
 }) {
-  const draggable = useDraggable({ id });
   return (
-    <div
-      ref={draggable.setNodeRef}
-      style={{
-        transform: CSS.Translate.toString(draggable.transform),
-        zIndex: draggable.isDragging ? 999 : undefined,
-        touchAction: 'none',
-      }}
-      {...draggable.listeners}
-      {...draggable.attributes}
-      className={`rounded-xl border border-slate-200 p-3 bg-slate-50 cursor-grab active:cursor-grabbing ${
-        draggable.isDragging ? 'shadow-xl ring-2 ring-emerald-300' : ''
-      }`}
-    >
-      <p className="text-xs font-black text-slate-700">{label}</p>
+    <div className="p-2 rounded-lg bg-white border-2 border-indigo-400 shadow-xl space-y-2 opacity-95 w-full">
+      <div className="flex items-center gap-1">
+        <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor" className="text-slate-400">
+          <circle cx="3" cy="3" r="1.5"/><circle cx="9" cy="3" r="1.5"/>
+          <circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/>
+          <circle cx="3" cy="13" r="1.5"/><circle cx="9" cy="13" r="1.5"/>
+        </svg>
+        <p className="text-[10px] font-black uppercase text-slate-400">Moving…</p>
+      </div>
+      <div className="w-full border border-indigo-200 rounded-lg px-2 py-2 text-xs font-bold bg-indigo-50 text-indigo-900">{playerName || '(empty)'}</div>
+      {playerRating !== '' && (
+        <div className="w-full border border-indigo-200 rounded-lg px-2 py-2 text-xs font-bold bg-indigo-50 text-indigo-700">{playerRating}</div>
+      )}
     </div>
   );
 }
 
-function CourtDropContainer({
+function SortableCourt({
   id,
-  enabled,
+  courtId,
+  isCrown,
+  courtPos,
+  orderedCourtsLength,
+  onMoveUp,
+  onMoveDown,
   children,
 }: {
   id: string;
-  enabled: boolean;
-  children: ReactNode;
+  courtId: string;
+  isCrown: boolean;
+  courtPos: number;
+  orderedCourtsLength: number;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  children: React.ReactNode;
 }) {
-  const droppable = useDroppable({ id, disabled: !enabled });
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+    isOver,
+  } = useSortable({ id });
+
+  // Only apply transform when THIS court is the one being dragged.
+  // Suppressing it on non-dragging courts prevents the sort-animation from
+  // zooming/moving court cards while a player slot is being dragged.
+  const dragStyle: React.CSSProperties = {
+    transform: isDragging ? CSS.Transform.toString(transform) : undefined,
+    transition: isDragging ? transition : undefined,
+    opacity: isDragging ? 0.4 : 1,
+    position: isDragging ? 'relative' : undefined,
+    zIndex: isDragging ? 50 : undefined,
+  };
+
   return (
     <div
-      ref={droppable.setNodeRef}
-      className={`${droppable.isOver ? 'ring-4 ring-emerald-200 rounded-[32px]' : ''}`}
+      ref={setNodeRef}
+      style={dragStyle}
+      className={`p-4 bg-white rounded-xl border space-y-4 transition-colors ${
+        isDragging
+          ? 'border-slate-200'
+          : isOver
+          ? 'border-indigo-400 ring-2 ring-indigo-300 bg-indigo-50/30'
+          : 'border-slate-200'
+      }`}
     >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            {...attributes}
+            {...listeners}
+            className="cursor-grab active:cursor-grabbing p-1.5 rounded text-slate-300 hover:text-slate-500 hover:bg-slate-100 touch-none"
+            title="Drag to reorder court"
+            tabIndex={-1}
+          >
+            <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
+              <circle cx="3" cy="3" r="1.5"/><circle cx="9" cy="3" r="1.5"/>
+              <circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/>
+              <circle cx="3" cy="13" r="1.5"/><circle cx="9" cy="13" r="1.5"/>
+            </svg>
+          </button>
+          <span className="font-black text-sm uppercase">Court {courtId} {isCrown ? '\uD83D\uDC51' : ''}</span>
+        </div>
+        <div className="flex gap-1">
+          <button
+            type="button"
+            disabled={courtPos === 0}
+            onClick={onMoveUp}
+            className="p-1 rounded-md bg-white border border-slate-200 text-[11px] font-black text-slate-500 disabled:opacity-30"
+            title="Move court up"
+          >↑</button>
+          <button
+            type="button"
+            disabled={courtPos === orderedCourtsLength - 1}
+            onClick={onMoveDown}
+            className="p-1 rounded-md bg-white border border-slate-200 text-[11px] font-black text-slate-500 disabled:opacity-30"
+            title="Move court down"
+          >↓</button>
+        </div>
+      </div>
       {children}
+    </div>
+  );
+}
+
+function UnassignedMatchCard({
+  label,
+  availableCourts,
+  onAssign,
+}: {
+  label: string;
+  availableCourts: string[];
+  onAssign: (courtId: string) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-200 p-3 bg-slate-50 space-y-2">
+      <p className="text-xs font-black text-slate-700">{label}</p>
+      <select
+        defaultValue=""
+        onChange={(e) => {
+          if (e.target.value) onAssign(e.target.value);
+          e.target.value = '';
+        }}
+        className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold bg-white"
+      >
+        <option value="" disabled>Assign to court…</option>
+        {availableCourts.map((c) => (
+          <option key={c} value={c}>Court {c}</option>
+        ))}
+      </select>
     </div>
   );
 }
 
 export default function Tournament() {
   const { state, config, session, computed, actions } = useTournamentController();
-  const [draggingCourtId, setDraggingCourtId] = useState<string | null>(null);
+
+  // ── Scoring Rules — local state only (Phase 5 will wire to engine) ──
+  const [scoringRules, setScoringRules] = useState({
+    pointsPerSet: 11,
+    setsPerMatch: 1,
+    winBy2: true,
+  });
+
+  // Shared DnD sensors (must be at top level — not inside conditionals)
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
+
+  // Track which player slot is being dragged to show DragOverlay
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+
   const duprRequiredPlayers = config.duprKnockoutStage === 'QUARTERFINAL' ? 16 : 8;
   const duprCanStartWithStage = config.players.length % 2 === 0 && config.players.length >= duprRequiredPlayers;
   const canUndoDuprMatch = Boolean(
@@ -220,20 +392,30 @@ export default function Tournament() {
   const duprRoundLabel = formatDuprPhaseLabel(session.duprState ?? null);
 
   if (state.tournamentFinished) {
-    const stats = state.isDuprMode
-      ? session.duprFinalLeaderboard.map((entry) => ({ name: entry.teamName, winCount: entry.wins }))
-      : computed.getLeaderboard();
-    const grouped = stats.reduce((acc, curr) => {
-      if (!acc[curr.winCount]) acc[curr.winCount] = [];
-      acc[curr.winCount].push(curr.name);
-      return acc;
-    }, {} as Record<number, string[]>);
-    const sortedScores = Object.keys(grouped).map(Number).sort((a, b) => b - a);
-    const podium = [
-      { names: grouped[sortedScores[0]] || [], score: sortedScores[0] || 0 },
-      { names: grouped[sortedScores[1]] || [], score: sortedScores[1] || 0 },
-      { names: grouped[sortedScores[2]] || [], score: sortedScores[2] || 0 },
-    ];
+    // For DUPR/GK mode the engine already places the final-match winner at index 0.
+    // Use leaderboard order directly so the champion is whoever won the final, not whoever
+    // accumulated the most wins across all rounds.
+    let podium: { names: string[]; score: number }[];
+    if (state.isDuprMode) {
+      podium = session.duprFinalLeaderboard.slice(0, 3).map((entry) => ({
+        names: [entry.teamName],
+        score: entry.wins,
+      }));
+      while (podium.length < 3) podium.push({ names: [], score: 0 });
+    } else {
+      const stats = computed.getLeaderboard();
+      const grouped = stats.reduce((acc, curr) => {
+        if (!acc[curr.winCount]) acc[curr.winCount] = [];
+        acc[curr.winCount].push(curr.name);
+        return acc;
+      }, {} as Record<number, string[]>);
+      const sortedScores = Object.keys(grouped).map(Number).sort((a, b) => b - a);
+      podium = [
+        { names: grouped[sortedScores[0]] || [], score: sortedScores[0] || 0 },
+        { names: grouped[sortedScores[1]] || [], score: sortedScores[1] || 0 },
+        { names: grouped[sortedScores[2]] || [], score: sortedScores[2] || 0 },
+      ];
+    }
 
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-start text-white p-6 pt-20 font-sans overflow-y-auto">
@@ -338,28 +520,74 @@ export default function Tournament() {
       }
     };
 
+    // Unified drag end — discriminates by ID prefix so courts and player slots
+    // share one DndContext, enabling cross-court player dragging.
+    const handleSetupDragEnd = (event: DragEndEvent) => {
+      setActiveDragId(null);
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const activeId = active.id as string;
+      const overId = over.id as string;
+      if (activeId.startsWith('court-') && overId.startsWith('court-')) {
+        actions.reorderCourtById(activeId.replace('court-', ''), overId.replace('court-', ''));
+      } else if (activeId.startsWith('player-slot-') && overId.startsWith('player-slot-')) {
+        const from = parseInt(activeId.replace('player-slot-', ''));
+        const to = parseInt(overId.replace('player-slot-', ''));
+        // Swap the two slots directly — no shifting of other players.
+        const next = [...config.players];
+        [next[from], next[to]] = [next[to], next[from]];
+        syncPlayersAndBulk(next);
+      }
+    };
+
     return (
       <div className="max-w-6xl mx-auto p-6 py-12 space-y-8 bg-white">
         <header className="text-center space-y-2">
           <h1 className="text-5xl font-black italic tracking-tighter text-slate-900 uppercase">Tournament Setup</h1>
         </header>
-        <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100">
-          <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">0. Game Mode</h3>
-          <select
-            value={state.mode}
-            onChange={(e) => actions.setMode(e.target.value as gameMode)}
-            className="w-full p-3 bg-white rounded-xl border border-slate-200 font-black text-sm text-slate-700"
-          >
-            {Object.values(gameMode).map((candidateMode) => (
-              <option key={candidateMode} value={candidateMode}>
-                {candidateMode}
-              </option>
+        <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100 space-y-4">
+          <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">0. Tournament Type</h3>
+
+          {/* Playable types */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {([gameMode.RALLYTOTHETOP, gameMode.GROUP_KNOCKOUT] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => actions.setMode(m)}
+                className={`py-3 px-4 rounded-xl border text-sm font-black uppercase tracking-widest text-left transition ${
+                  state.mode === m
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                    : 'bg-white text-slate-700 border-slate-200 hover:border-indigo-300'
+                }`}
+              >
+                {m}
+                <span className={`block text-[10px] font-bold mt-0.5 uppercase tracking-widest ${state.mode === m ? 'text-indigo-200' : 'text-emerald-600'}`}>
+                  ✓ Playable
+                </span>
+              </button>
             ))}
-          </select>
-          {state.mode === gameMode.DUPR && (
-            <div className="mt-3 space-y-2">
+          </div>
+
+          {/* Coming-soon types */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {([gameMode.ROUNDROBIN, gameMode.SINGLE_ELIMINATION, gameMode.DOUBLE_ELIMINATION] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                disabled
+                className="py-3 px-4 rounded-xl border border-slate-200 bg-slate-100 text-left cursor-not-allowed opacity-60"
+              >
+                <span className="text-sm font-black text-slate-500 uppercase tracking-widest">{m}</span>
+                <span className="block text-[10px] font-bold mt-0.5 text-slate-400 uppercase tracking-widest">Coming Soon</span>
+              </button>
+            ))}
+          </div>
+
+          {state.mode === gameMode.GROUP_KNOCKOUT && (
+            <div className="mt-1 space-y-2">
               <p className="text-[10px] font-black uppercase tracking-widest text-amber-600">
-                DUPR mode is fully playable.
+                Group Knockout mode is fully playable.
               </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 <button
@@ -390,11 +618,52 @@ export default function Tournament() {
               </p>
             </div>
           )}
-          {state.mode !== gameMode.RALLYTOTHETOP && state.mode !== gameMode.DUPR && (
-            <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-amber-600">
-              This mode is selectable but not wired in gameplay yet.
-            </p>
-          )}
+        </section>
+
+        {/* ── Section 0.5 — Scoring Rules (local state, wired to engine in Phase 5) ── */}
+        <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">0.5 Scoring Rules</h3>
+            <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-600 uppercase tracking-widest">Preview — engine not yet wired</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="space-y-1">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Points per Set</label>
+              <input
+                type="number"
+                min={1}
+                max={25}
+                value={scoringRules.pointsPerSet}
+                onChange={(e) => setScoringRules((r) => ({ ...r, pointsPerSet: Math.max(1, parseInt(e.target.value) || 11) }))}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold bg-white"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Sets per Match</label>
+              <input
+                type="number"
+                min={1}
+                max={5}
+                value={scoringRules.setsPerMatch}
+                onChange={(e) => setScoringRules((r) => ({ ...r, setsPerMatch: Math.max(1, parseInt(e.target.value) || 1) }))}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold bg-white"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Win By 2</label>
+              <button
+                type="button"
+                onClick={() => setScoringRules((r) => ({ ...r, winBy2: !r.winBy2 }))}
+                className={`w-full py-2 rounded-xl border text-xs font-black uppercase tracking-widest transition ${
+                  scoringRules.winBy2
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white text-slate-600 border-slate-200'
+                }`}
+              >
+                {scoringRules.winBy2 ? 'On' : 'Off'}
+              </button>
+            </div>
+          </div>
         </section>
 
         <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100 space-y-6">
@@ -474,75 +743,140 @@ export default function Tournament() {
           </div>
 
           <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
-            Drag active courts to reorder priority. Use slot drag handles to swap players.
+            Drag ⠿ to reorder courts and player slots — or use ↑↓ for fine control.
           </p>
 
-          <DndContext
-            onDragEnd={(event: DragEndEvent) => {
-              const sourceId = String(event.active.id);
-              const targetId = event.over ? String(event.over.id) : '';
-              if (!targetId) return;
-              const sourceIndex = parseSetupSlotId(sourceId);
-              const targetIndex = parseSetupSlotId(targetId);
-              if (sourceIndex === null || targetIndex === null) return;
-              swapSetupPlayersAtIndexes(sourceIndex, targetIndex);
-            }}
-          >
-          <div className="space-y-3">
-            {config.courtOrder
-              .filter((c) => config.selectedCourts.includes(c))
-              .map((c, i) => {
-                const draft = config.courtTeamDrafts[c];
-                const courtBaseIndex = i * 4;
-                return (
-                  <div
-                    key={c}
-                    draggable
-                    onDragStart={() => setDraggingCourtId(c)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => {
-                      if (draggingCourtId) actions.reorderCourtById(draggingCourtId, c);
-                      setDraggingCourtId(null);
-                    }}
-                    className="p-4 bg-white rounded-xl border border-slate-200 space-y-4"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-black text-sm uppercase">Court {c} {i === 0 ? '👑' : ''}</span>
-                      <span className="text-[10px] font-black uppercase text-slate-400">Drag</span>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {(['A', 'B'] as const).map((teamKey) => {
-                        const offsets = teamKey === 'A' ? [0, 1] : [2, 3];
-                        return (
-                          <div key={`${c}-team-${teamKey}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 space-y-2">
-                            <p className="text-[11px] font-black uppercase tracking-widest text-slate-600">Team {teamKey}</p>
-                            {offsets.map((offset, playerOffset) => {
-                              const playerIndex = courtBaseIndex + offset;
-                              const player = config.players[playerIndex];
+          {(() => {
+            const orderedCourts = config.courtOrder.filter((c) => config.selectedCourts.includes(c));
+            // All court + player-slot IDs in one SortableContext so players can be
+            // dragged across court boundaries.
+            const allSortableIds = [
+              ...orderedCourts.map((c) => `court-${c}`),
+              ...config.players.map((_, i) => `player-slot-${i}`),
+            ];
+            return (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragStart={(event: DragStartEvent) => {
+                  if ((event.active.id as string).startsWith('player-slot-')) {
+                    setActiveDragId(event.active.id as string);
+                  }
+                }}
+                onDragEnd={handleSetupDragEnd}
+                onDragCancel={() => setActiveDragId(null)}
+              >
+                <SortableContext items={allSortableIds} strategy={verticalListSortingStrategy}>
+                  <div className="space-y-3">
+                    {orderedCourts.map((c, i) => {
+                      const courtBaseIndex = i * 4;
+                      return (
+                        <SortableCourt
+                          key={c}
+                          id={`court-${c}`}
+                          courtId={c}
+                          isCrown={i === 0}
+                          courtPos={i}
+                          orderedCourtsLength={orderedCourts.length}
+                          onMoveUp={() => {
+                            const prev = orderedCourts[i - 1];
+                            if (prev) actions.reorderCourtById(c, prev);
+                          }}
+                          onMoveDown={() => {
+                            const next = orderedCourts[i + 1];
+                            if (next) actions.reorderCourtById(c, next);
+                          }}
+                        >
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {(['A', 'B'] as const).map((teamKey) => {
+                              const offsets = teamKey === 'A' ? [0, 1] : [2, 3];
                               return (
-                                <SetupDraggablePlayerSlot
-                                  key={`${c}-slot-${offset}`}
-                                  id={setupSlotId(playerIndex)}
-                                  slotNumber={playerOffset + 1}
-                                  playerName={player?.name ?? ''}
-                                  playerRating={player?.rating ?? ''}
-                                  onNameChange={(value) => updatePlayerNameAtIndex(playerIndex, value)}
-                                  onRatingChange={(value) => updatePlayerRatingAtIndex(playerIndex, value)}
-                                />
+                                <div key={`${c}-team-${teamKey}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+                                  <p className="text-[11px] font-black uppercase tracking-widest text-slate-600">Team {teamKey}</p>
+                                  {offsets.map((offset, playerOffset) => {
+                                    const playerIndex = courtBaseIndex + offset;
+                                    const player = config.players[playerIndex];
+                                    return (
+                                      <SetupPlayerSlot
+                                        key={`${c}-slot-${offset}`}
+                                        id={`player-slot-${playerIndex}`}
+                                        slotNumber={playerOffset + 1}
+                                        playerName={player?.name ?? ''}
+                                        playerRating={player?.rating ?? ''}
+                                        canMoveUp={playerIndex > 0}
+                                        canMoveDown={playerIndex < config.players.length - 1}
+                                        isActivelyDragging={activeDragId !== null}
+                                        onMoveUp={() => swapSetupPlayersAtIndexes(playerIndex, playerIndex - 1)}
+                                        onMoveDown={() => swapSetupPlayersAtIndexes(playerIndex, playerIndex + 1)}
+                                        onNameChange={(value) => updatePlayerNameAtIndex(playerIndex, value)}
+                                        onRatingChange={(value) => updatePlayerRatingAtIndex(playerIndex, value)}
+                                      />
+                                    );
+                                  })}
+                                </div>
                               );
                             })}
                           </div>
-                        );
-                      })}
-                    </div>
-
-                    
+                        </SortableCourt>
+                      );
+                    })}
                   </div>
-                );
-              })}
+                </SortableContext>
+                <DragOverlay dropAnimation={null}>
+                  {activeDragId ? (() => {
+                    const idx = parseInt(activeDragId.replace('player-slot-', ''));
+                    const p = config.players[idx];
+                    return (
+                      <SetupPlayerSlotOverlay
+                        playerName={p?.name ?? ''}
+                        playerRating={p?.rating ?? ''}
+                      />
+                    );
+                  })() : null}
+                </DragOverlay>
+              </DndContext>
+            );
+          })()}
+        </section>
+
+        <MigrationToolSection />
+
+        {/* ── Section 3 — Tournament Metadata ── */}
+        <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100 space-y-4">
+          <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">3. Tournament Info</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="sm:col-span-3 space-y-1">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Tournament Name</label>
+              <input
+                type="text"
+                value={config.tournamentName}
+                onChange={(e) => actions.setMetadata({ tournamentName: e.target.value })}
+                placeholder="e.g. Spring Smash 2026"
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold bg-white"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Date</label>
+              <input
+                type="date"
+                value={config.tournamentDate}
+                onChange={(e) => actions.setMetadata({ tournamentDate: e.target.value })}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold bg-white"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Available Courts at Venue</label>
+              <input
+                type="number"
+                min={1}
+                max={7}
+                value={config.courtCount}
+                onChange={(e) => actions.setMetadata({ courtCount: Math.min(7, Math.max(1, parseInt(e.target.value) || 7)) })}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold bg-white"
+              />
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Max 7 courts</p>
+            </div>
           </div>
-          </DndContext>
         </section>
 
         <button
@@ -565,6 +899,9 @@ export default function Tournament() {
               ? duprRoundLabel
               : formatRallyRoundLabel(session.history.length + 1)}
           </h1>
+          {config.tournamentName && (
+            <p className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">{config.tournamentName}</p>
+          )}
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
             {state.isDuprMode ? `Mode: ${state.mode}` : `King: Court ${session.kingCourt} • Bottom: Court ${session.bottomCourt}`}
           </p>
@@ -584,47 +921,24 @@ export default function Tournament() {
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-10">
-        <DndContext
-          onDragEnd={(event: DragEndEvent) => {
-            const activeId = String(event.active.id);
-            const overId = event.over ? String(event.over.id) : '';
-            if (!overId) return;
-
-            const unassigned = parseUnassignedMatchId(activeId);
-            const droppedCourt = parseCourtDropId(overId);
-            if (unassigned && droppedCourt) {
-              actions.assignDuprMatchToCourt(unassigned.matchId, droppedCourt, unassigned.roundIndex);
-              return;
-            }
-
-            if (!session.isEditMode) return;
-            const source = parseSlotId(activeId);
-            const target = parseSlotId(overId);
-            if (!source || !target) return;
-            actions.swapPlayersByPosition(source, target);
-          }}
-        >
           <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-4">
             {(state.isDuprMode ? config.selectedCourts : session.activeCourtOrder).map((cId) => {
               const m = session.currentMatches[cId];
               if (!m && state.isDuprMode) {
                 return (
-                  <CourtDropContainer key={cId} id={courtDropId(cId)} enabled={true}>
-                    <div className="bg-white h-fit rounded-[32px] border-2 border-dashed border-emerald-300 transition overflow-hidden">
-                      <div className="py-2 px-4 text-[15px] text-center font-black uppercase tracking-widest bg-emerald-600 text-white">
-                        Court {cId}
-                      </div>
-                      <div className="p-6 text-center">
-                        <p className="text-sm font-black uppercase tracking-widest text-emerald-600">Waiting For Next Match</p>
-                      </div>
+                  <div key={cId} className="bg-white h-fit rounded-[32px] border-2 border-dashed border-emerald-300 transition overflow-hidden">
+                    <div className="py-2 px-4 text-[15px] text-center font-black uppercase tracking-widest bg-emerald-600 text-white">
+                      Court {cId}
                     </div>
-                  </CourtDropContainer>
+                    <div className="p-6 text-center">
+                      <p className="text-sm font-black uppercase tracking-widest text-emerald-600">Waiting For Next Match</p>
+                    </div>
+                  </div>
                 );
               }
               if (!m) return null;
               return (
-                <CourtDropContainer key={cId} id={courtDropId(cId)} enabled={state.isDuprMode && !session.currentMatches[cId]}>
-                <div className={`bg-white h-fit rounded-[32px] border-2 transition overflow-hidden ${state.isDuprMode ? 'border-emerald-200' : cId === session.kingCourt ? 'border-amber-400 ring-4 ring-amber-50' : 'border-slate-100'}`}>
+                <div key={cId} className={`bg-white h-fit rounded-[32px] border-2 transition overflow-hidden ${state.isDuprMode ? 'border-emerald-200' : cId === session.kingCourt ? 'border-amber-400 ring-4 ring-amber-50' : 'border-slate-100'}`}>
                 {/* Court Header */}
                 <div className={`py-2 px-4 text-[15px] text-center font-black uppercase tracking-widest ${state.isDuprMode ? 'bg-emerald-600 text-white' : cId === session.kingCourt ? 'bg-amber-400' : cId === session.bottomCourt ? 'bg-slate-200' : 'bg-slate-800 text-white'}`}>
                   Court {cId} {!state.isDuprMode ? (cId === session.kingCourt ? '👑' : cId === session.bottomCourt ? '⬇️' : '') : ''}
@@ -649,9 +963,8 @@ export default function Tournament() {
                             const active = session.swapSelection?.courtId === cId && session.swapSelection.team === teamKey && session.swapSelection.index === idx;
                             const disabled = !session.isRoundOne && session.swapSelection && session.swapSelection.courtId !== cId;
                             return (
-                              <DraggablePlayerSlot
+                              <PlayerSlot
                                 key={idx}
-                                id={slotId({ courtId: cId, team: teamKey as 'A' | 'B', index: idx })}
                                 text={computed.capitalize(pId)}
                                 isEditMode={session.isEditMode}
                                 isActive={active}
@@ -715,7 +1028,6 @@ export default function Tournament() {
                   </div>
                 )}
               </div>
-                </CourtDropContainer>
               );
             })}
           </div>
@@ -733,11 +1045,13 @@ export default function Tournament() {
                       const round = session.duprState?.rounds[entry.roundIndex];
                       const match = round?.matches[entry.matchId];
                     if (!match) return null;
+                    const emptyCourts = config.selectedCourts.filter((c) => !session.currentMatches[c]);
                     return (
                       <div key={`${entry.roundIndex}-${entry.matchId}`} className="space-y-2">
-                        <DraggableUnassignedMatch
-                          id={unassignedMatchId(entry.roundIndex, entry.matchId)}
+                        <UnassignedMatchCard
                           label={`${match.teamA.join(' / ')} vs ${match.teamB.join(' / ')}`}
+                          availableCourts={emptyCourts}
+                          onAssign={(courtId) => actions.assignDuprMatchToCourt(entry.matchId, courtId, entry.roundIndex)}
                         />
                       </div>
                     );
@@ -779,7 +1093,6 @@ export default function Tournament() {
               </div>
             </div>
           </aside>
-        </DndContext>
       </div>
 
       {/* --- HISTORY LOG MODAL --- */}
