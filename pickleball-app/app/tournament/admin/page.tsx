@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Player, Match, Round } from '@/app/lib/definitions';
 import { saveTournamentState, getTournamentState, clearTournament } from '@/app/lib/actions';
 import { firePodiumConfetti } from '@/app/ui/confetti';
@@ -26,6 +26,10 @@ export default function Tournament() {
       const [history, setHistory] = useState<Round[]>([]);
       const [bulkInput, setBulkInput] = useState('');
       const [benchMessage, setBenchMessage] = useState<string | null>(null);
+      const [bottomBonusMessage, setBottomBonusMessage] = useState<string | null>(null);
+      // Set to true only inside generatePairings (non-first round) so the bonus
+      // banner useEffect fires on new pairings but NOT on undo or hydration.
+      const newRoundPairingsRef = useRef(false);
 
     const syncData = React.useCallback(async (overrideState?: any) => {
     const stateToSave = overrideState || {
@@ -220,6 +224,7 @@ export default function Tournament() {
       })).sort((a, b) => a.score - b.score);
       newMatches[cId] = { ...scored[0], winner: null };
     });
+    if (!isFirst) newRoundPairingsRef.current = true;
     setCurrentMatches(newMatches);
     setWaitingPlayers(waitingIds);
   };
@@ -251,25 +256,96 @@ export default function Tournament() {
   const getLeaderboard = () => {
     const wins: Record<string, number> = {};
     players.forEach(p => wins[p.id] = 0);
-    
+
+    // Bottom court bonus: +1 once per session the first time a player who has
+    // been on the bottom court is placed on king court (win OR loss).
+    const bonusEnabled = bottomCourt !== kingCourt;
+    const hasBeenOnBottom: Record<string, boolean> = {};
+    const hasReceivedBonus: Record<string, boolean> = {};
+
     history.forEach((round, index) => {
+      if (bonusEnabled) {
+        const bm = round.matches[bottomCourt];
+        if (bm) [...bm.teamA, ...bm.teamB].forEach(id => { hasBeenOnBottom[id] = true; });
+      }
+
       // index 0 = Round 1 (Ignore)
       // index 1 = Round 2, index 2 = Round 3, etc.
-      if (index >= 1) { 
+      if (index >= 1) {
         const km = round.matches[kingCourt];
-        if (km?.winner) {
-          const winners = km.winner === 'A' ? km.teamA : km.teamB;
-          winners.forEach(wId => {
-            wins[wId] = (wins[wId] || 0) + 1;
-          });
+        if (km) {
+          // Regular scoring: king court winners get +1
+          if (km.winner) {
+            const winners = km.winner === 'A' ? km.teamA : km.teamB;
+            winners.forEach(wId => { wins[wId] = (wins[wId] || 0) + 1; });
+          }
+          // Bottom court bonus: +1 for any player reaching king court (win OR loss)
+          if (bonusEnabled) {
+            [...km.teamA, ...km.teamB].forEach(pId => {
+              if (hasBeenOnBottom[pId] && !hasReceivedBonus[pId]) {
+                wins[pId] = (wins[pId] || 0) + 1;
+                hasReceivedBonus[pId] = true;
+              }
+            });
+          }
         }
       }
     });
-    return Object.entries(wins).map(([id, winCount]) => ({ 
-      name: players.find(p => p.id === id)?.name || id, 
-      winCount 
+    // Also check the live round: bonus fires the moment a player is placed on
+    // king court, not just after they win and Next Round is clicked.
+    // history.length >= 1 means this is at least Round 2 (a scoring round).
+    if (bonusEnabled && history.length >= 1) {
+      const km = currentMatches[kingCourt];
+      if (km) {
+        [...km.teamA, ...km.teamB].forEach(pId => {
+          if (hasBeenOnBottom[pId] && !hasReceivedBonus[pId]) {
+            wins[pId] = (wins[pId] || 0) + 1;
+            hasReceivedBonus[pId] = true;
+          }
+        });
+      }
+    }
+
+    return Object.entries(wins).map(([id, winCount]) => ({
+      name: players.find(p => p.id === id)?.name || id,
+      winCount
     })).sort((a, b) => b.winCount - a.winCount);
   };
+
+  // Fire the bonus banner the moment new round pairings are set (not on undo/hydration).
+  // newRoundPairingsRef is set to true only inside generatePairings for non-first rounds.
+  useEffect(() => {
+    if (!newRoundPairingsRef.current) return;
+    newRoundPairingsRef.current = false;
+
+    if (bottomCourt === kingCourt) return;
+    const km = currentMatches[kingCourt];
+    if (!km) return;
+
+    // Rebuild who was on bottom court and who already received the bonus from history
+    const onBottom: Set<string> = new Set();
+    const alreadyBonused: Set<string> = new Set();
+    history.forEach((round, index) => {
+      const bm = round.matches[bottomCourt];
+      if (bm) [...bm.teamA, ...bm.teamB].forEach(id => onBottom.add(id));
+      if (index >= 1) {
+        const hkm = round.matches[kingCourt];
+        if (hkm) [...hkm.teamA, ...hkm.teamB].forEach(pId => {
+          if (onBottom.has(pId)) alreadyBonused.add(pId);
+        });
+      }
+    });
+
+    const earners = [...km.teamA, ...km.teamB]
+      .filter(pId => onBottom.has(pId) && !alreadyBonused.has(pId))
+      .map(pId => capitalize(players.find(p => p.id === pId)?.name || pId));
+
+    if (earners.length > 0) {
+      setBottomBonusMessage(`🏅 Bottom court bonus: ${earners.join(' & ')} +1 pt!`);
+      setTimeout(() => setBottomBonusMessage(null), 3000);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMatches]);
 
   if (tournamentFinished) {
     const stats = getLeaderboard();
@@ -571,10 +647,16 @@ export default function Tournament() {
                   if (last.players) setPlayers(last.players); // revert bench counts
                   setHistory(ph);
                   setBenchMessage(null);
+                  setBottomBonusMessage(null);
                 }
               }
             }} disabled={history.length === 0} className="flex-1 py-6 bg-slate-400 text-white font-black text-xl rounded-3xl disabled:opacity-10 transition duration-300 opacity-50 hover:opacity-100">UNDO</button>
             </div>
+          {bottomBonusMessage && (
+            <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl text-sm font-bold text-amber-800 leading-tight">
+              {bottomBonusMessage}
+            </div>
+          )}
           {/* --- BENCH SECTION --- */}
           {waitingPlayers.length > 0 && (
             <div className="bg-slate-50 rounded-[32px] p-5 border-2 border-slate-200">

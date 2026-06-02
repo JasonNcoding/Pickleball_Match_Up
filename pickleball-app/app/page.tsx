@@ -179,23 +179,52 @@ export default function KotcApp() {
   const getLeaderboard = () => {
     const wins: Record<string, number> = {};
     players.forEach(p => wins[p.id] = 0);
-    
+
+    const bonusEnabled = bottomCourt !== kingCourt;
+    const hasBeenOnBottom: Record<string, boolean> = {};
+    const hasReceivedBonus: Record<string, boolean> = {};
+
     history.forEach((round, index) => {
+      if (bonusEnabled) {
+        const bm = round.matches[bottomCourt];
+        if (bm) [...bm.teamA, ...bm.teamB].forEach(id => { hasBeenOnBottom[id] = true; });
+      }
+
       // index 0 = Round 1 (Ignore)
       // index 1 = Round 2, index 2 = Round 3, etc.
-      if (index >= 1) { 
+      if (index >= 1) {
         const km = round.matches[kingCourt];
-        if (km?.winner) {
-          const winners = km.winner === 'A' ? km.teamA : km.teamB;
-          winners.forEach(wId => {
-            wins[wId] = (wins[wId] || 0) + 1;
-          });
+        if (km) {
+          if (km.winner) {
+            const winners = km.winner === 'A' ? km.teamA : km.teamB;
+            winners.forEach(wId => { wins[wId] = (wins[wId] || 0) + 1; });
+          }
+          if (bonusEnabled) {
+            [...km.teamA, ...km.teamB].forEach(pId => {
+              if (hasBeenOnBottom[pId] && !hasReceivedBonus[pId]) {
+                wins[pId] = (wins[pId] || 0) + 1;
+                hasReceivedBonus[pId] = true;
+              }
+            });
+          }
         }
       }
     });
-    return Object.entries(wins).map(([id, winCount]) => ({ 
-      name: players.find(p => p.id === id)?.name || id, 
-      winCount 
+    if (bonusEnabled && history.length >= 1) {
+      const km = currentMatches[kingCourt];
+      if (km) {
+        [...km.teamA, ...km.teamB].forEach(pId => {
+          if (hasBeenOnBottom[pId] && !hasReceivedBonus[pId]) {
+            wins[pId] = (wins[pId] || 0) + 1;
+            hasReceivedBonus[pId] = true;
+          }
+        });
+      }
+    }
+
+    return Object.entries(wins).map(([id, winCount]) => ({
+      name: players.find(p => p.id === id)?.name || id,
+      winCount
     })).sort((a, b) => b.winCount - a.winCount);
   };
 
