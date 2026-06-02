@@ -326,15 +326,30 @@ export default function Tournament() {
             <div className="space-y-4">
               {getLeaderboard().slice(0, 5).map((e, i) => (
                 <div key={e.name} className="flex text-[25px] justify-between border-b border-slate-800 pb-2">
-                  
-
                   <span className=" font-bold text-white" >{i+1}. {capitalize(e.name)}</span>
                   <span className={`font-bold  text-white`}>{e.winCount}</span>
                 </div>
               ))}
             </div>
           </div>
-          
+
+          {waitingPlayers.length > 0 && (
+            <div className="bg-slate-700 text-white p-6 rounded-[32px] shadow-xl">
+              <h2 className="text-[26px] text-slate-300 font-black italic mb-3 tracking-tighter text-center uppercase">On Bench</h2>
+              <div className="space-y-3">
+                {waitingPlayers.map(pId => {
+                  const player = players.find(p => p.id === pId);
+                  const benchCount = player?.benchCount ?? 0;
+                  return (
+                    <div key={pId} className="flex items-center justify-between border-b border-slate-600 pb-2">
+                      <span className="text-[22px] font-bold text-white">{capitalize(pId)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
         </aside>
       </div>
 
