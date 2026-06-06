@@ -1,354 +1,132 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
-import React, { useState, useEffect, useRef } from 'react';
-import { Player, Match, Round } from '@/app/lib/definitions';
-import { saveTournamentState, getTournamentState, clearTournament } from '@/app/lib/actions';
+import React, { useState, useRef } from 'react';
+import type { Player, Match } from '@/app/lib/definitions';
+import { useTournament } from '@/app/lib/store/tournament-store';
 import { firePodiumConfetti } from '@/app/ui/confetti';
-import { selectPlayersForBench, applyBenchCounts } from '@/app/lib/bench-rotation';
+import { BracketView } from '@/app/ui/bracket';
 
 export default function Tournament() {
-  const router = useRouter();
-    const [isHydrated, setIsHydrated] = useState(false);
-      const [setupComplete, setSetupComplete] = useState(false);
-      const [tournamentFinished, setTournamentFinished] = useState(false);
-      const [isEditMode, setIsEditMode] = useState(false);
-      const [showHistoryModal, setShowHistoryModal] = useState(false);
-      const [swapSelection, setSwapSelection] = useState<{courtId?: string, team?: 'A'|'B', index?: number, isWaitlist?: boolean, pId?: string} | null>(null);
-      
-      const availableCourts = ['1', '2', '3', '4', '5', '6', '7'];
-      const [selectedCourts, setSelectedCourts] = useState<string[]>(['3', '4', '5', '6', '7']);
-      const [courtOrder, setCourtOrder] = useState<string[]>(['1', '2', '3']);
-    
-      const [players, setPlayers] = useState<Player[]>([]);
-      const [waitingPlayers, setWaitingPlayers] = useState<string[]>([]);
-      const [currentMatches, setCurrentMatches] = useState<Record<string, Match>>({});
-      const [history, setHistory] = useState<Round[]>([]);
-      const [bulkInput, setBulkInput] = useState('');
-      const [benchMessage, setBenchMessage] = useState<string | null>(null);
-      const [bottomBonusMessage, setBottomBonusMessage] = useState<string | null>(null);
-      // Set to true only inside generatePairings (non-first round) so the bonus
-      // banner useEffect fires on new pairings but NOT on undo or hydration.
-      const newRoundPairingsRef = useRef(false);
+  const t = useTournament();
 
-    const syncData = React.useCallback(async (overrideState?: any) => {
-    const stateToSave = overrideState || {
-      setupComplete,
-      tournamentFinished,
-      selectedCourts,
-      courtOrder,
-      players,
-      waitingPlayers,
-      currentMatches,
-      history,
-      bulkInput
+  // local setup-screen state
+  const [editingNameIdx, setEditingNameIdx] = useState<number | null>(null);
+  const [editingNameVal, setEditingNameVal] = useState('');
+  const [addPlayerName, setAddPlayerName] = useState('');
+  const addInputRef = useRef<HTMLInputElement>(null);
+
+  function commitNameEdit(idx: number) {
+    const trimmed = editingNameVal.trim();
+    if (trimmed) {
+      const next = [...t.players];
+      next[idx] = { ...next[idx], id: trimmed, name: trimmed };
+      t.setPlayers(next);
+      t.setBulkInput(next.map(pl => `${pl.name}:${pl.rating}`).join('\n'));
+    }
+    setEditingNameIdx(null);
+  }
+
+  function adjustRating(idx: number, delta: number) {
+    const next = [...t.players];
+    const newRating = Math.round((next[idx].rating + delta) * 10) / 10;
+    next[idx] = { ...next[idx], rating: Math.min(6.0, Math.max(2.0, newRating)) };
+    t.setPlayers(next);
+    t.setBulkInput(next.map(pl => `${pl.name}:${pl.rating}`).join('\n'));
+  }
+
+  function addPlayer() {
+    const name = addPlayerName.trim();
+    if (!name) return;
+    const next = [...t.players, { id: name, name, rating: 3.5, benchCount: 0, lastBenchedRound: null }];
+    t.setPlayers(next);
+    t.setBulkInput(next.map(pl => `${pl.name}:${pl.rating}`).join('\n'));
+    setAddPlayerName('');
+    addInputRef.current?.focus();
+  }
+
+  // Handles score input for async RR / KO score mode. Updates currentMatches and auto-detects winner.
+  function handleScoreInput(courtId: string, team: 'A' | 'B', rawValue: string) {
+    const score = rawValue === '' ? undefined : Math.max(0, parseInt(rawValue) || 0);
+    const m = t.currentMatches[courtId];
+    if (!m) return;
+    const updated: Match = {
+      ...m,
+      scoreA: team === 'A' ? score : m.scoreA,
+      scoreB: team === 'B' ? score : m.scoreB,
     };
-  
-    // Only save if we are hydrated and (setup is complete OR we are forcing a save via override)
-    if (isHydrated && (stateToSave.setupComplete || overrideState)) {
-      console.log("Syncing to cloud...");
-      const result = await saveTournamentState(stateToSave);
-      if (!result.success) console.error("Cloud sync failed");
-      return result;
+    if (updated.scoreA !== undefined && updated.scoreB !== undefined) {
+      if (updated.scoreA > updated.scoreB) updated.winner = 'A';
+      else if (updated.scoreB > updated.scoreA) updated.winner = 'B';
+      else updated.winner = null;
     }
-  }, [isHydrated, setupComplete, tournamentFinished, selectedCourts, courtOrder, players, waitingPlayers, currentMatches, history, bulkInput]);
-    
-  
-      useEffect(() => {
-    const loadInitialData = async () => {
-      // 1. Try to get data from Postgres
-      const data = await getTournamentState();
-      
-      if (data) {
-        try {
-          setSetupComplete(data.setupComplete);
-          setTournamentFinished(data.tournamentFinished);
-          setSelectedCourts(data.selectedCourts);
-          setCourtOrder(data.courtOrder || data.selectedCourts);
-          setPlayers((data.players as Player[]).map(p => ({
-            ...p,
-            benchCount: p.benchCount ?? 0,
-            lastBenchedRound: p.lastBenchedRound ?? null,
-          })));
-          setWaitingPlayers(data.waitingPlayers);
-          setCurrentMatches(data.currentMatches);
-          setHistory(data.history);
-          setBulkInput(data.bulkInput);
-        } catch (e) {
-          console.error("Error parsing database state:", e);
-        }
-      } else {
-        // 2. Optional: Fallback to localStorage if the DB is empty (for migration)
-        const saved = localStorage.getItem('kotc_session');
-        if (saved) {
-          const localData = JSON.parse(saved);
-          // ... set states from localData if you want to migrate existing data
-        }
-      }
-  
-      setIsHydrated(true);
-    };
-  
-    loadInitialData();
-  }, []);
-    
-      useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      syncData();
-    }, 500); // 1.5s debounce to avoid hitting DB on every single keystroke
-    
-    return () => clearTimeout(timeoutId);
-  }, [syncData]); // Only re-runs if the memoized syncData function changes
-  
-  useEffect(() => {
-    setCourtOrder(prev => {
-      const newBase = selectedCourts.filter(c => prev.includes(c));
-      const added = selectedCourts.filter(c => !prev.includes(c));
-      return [...newBase, ...added];
-    });
-  }, [selectedCourts]);
+    t.setCurrentMatches({ ...t.currentMatches, [courtId]: updated });
+  }
 
-  const kingCourt = courtOrder[0];
-  const bottomCourt = courtOrder[courtOrder.length - 1];
-  const secondBottomCourt = courtOrder.length >= 2 ? courtOrder[courtOrder.length - 2] : null;
+  // ── Finished Screen ─────────────────────────────────────────────────────────
 
-  const moveCourt = (index: number, direction: 'up' | 'down') => {
-    const newOrder = [...courtOrder];
-    const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    if (targetIndex < 0 || targetIndex >= newOrder.length) return;
-    [newOrder[index], newOrder[targetIndex]] = [newOrder[targetIndex], newOrder[index]];
-    setCourtOrder(newOrder);
-  };
+  if (t.tournamentFinished) {
+    const isKnockout = t.modeConfig.mode === 'knockout';
+    const isSwissKoFinished = t.modeConfig.mode === 'swiss-ko' && t.swissKoPhase === 'knockout';
 
-  const capitalize = (str: string) => str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
-  const isRoundOne = history.length === 0;
+    if ((isKnockout || isSwissKoFinished) && t.champions.length > 0) {
+      const koBoard = t.getKOLeaderboard();
+      const eliminated = koBoard.filter(e => e.eliminated);
+      return (
+        <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-start text-white p-6 pt-20 font-sans overflow-y-auto">
+          <h1 className="text-5xl font-black italic mb-12 text-amber-400 uppercase tracking-tighter text-center">
+            Champions!
+          </h1>
+          <div className="flex flex-col items-center mb-16">
+            <div className="text-[100px] mb-4">👑</div>
+            <div className="flex gap-4 flex-wrap justify-center">
+              {t.champions.map(p => (
+                <div
+                  key={p.id}
+                  className="kahoot-wiggle font-black text-[80px] uppercase text-amber-400 leading-tight text-center"
+                >
+                  {t.capitalize(p.name)}
+                </div>
+              ))}
+            </div>
+            <p className="text-amber-600 font-black text-2xl mt-4 uppercase tracking-widest">
+              Knockout Champions
+            </p>
+          </div>
 
-  const getPartnershipCount = (p1: string, p2: string) => {
-    let count = 0;
-    history.forEach(round => {
-      Object.values(round.matches).forEach(m => {
-        if ((m.teamA.includes(p1) && m.teamA.includes(p2)) || (m.teamB.includes(p1) && m.teamB.includes(p2))) count++;
-      });
-    });
-    return count;
-  };
+          {/* Knockout final standings */}
+          {eliminated.length > 0 && (
+            <div className="w-full max-w-sm mb-10 bg-slate-900 rounded-[32px] p-6">
+              <h3 className="text-[10px] font-black text-red-400 uppercase tracking-widest mb-3">Eliminated</h3>
+              <div className="space-y-2">
+                {eliminated.map(e => (
+                  <div key={e.id} className="flex justify-between text-sm">
+                    <span className="text-slate-400 line-through">{t.capitalize(e.teamLabel)}</span>
+                    <span className="text-slate-500">{e.wins}W</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
-  const hasPlayedTogetherRecently = (p1: string, p2: string) => {
-    if (history.length === 0) return false;
-    // const lastRound = history[history.length - 1];
-    // return Object.values(lastRound.matches).some(m => (m.teamA.includes(p1) && m.teamA.includes(p2)) || (m.teamB.includes(p1) && m.teamB.includes(p2)));
-    return history.some(round => 
-    Object.values(round.matches).some(m => 
-      (m.teamA.includes(p1) && m.teamA.includes(p2)) || 
-      (m.teamB.includes(p1) && m.teamB.includes(p2))
-    )
-  );
-  
-  };
-
-  const generatePairings = (isFirst: boolean, roster: Player[], courts: string[]) => {
-    const needed = courts.length * 4;
-    let playingIds: string[] = [];
-    let waitingIds: string[] = [];
-
-    if (isFirst) {
-      const sortedIds = [...roster].sort((a, b) => a.rating - b.rating).map(p => p.id);
-      playingIds = sortedIds.slice(0, needed);
-      waitingIds = sortedIds.slice(needed);
-    } else {
-      // --- Rally ranking: winners move up, losers move down ---
-      const lastRound = currentMatches;
-      const rankedPool: string[][] = [];
-      courtOrder.forEach((cId) => {
-        const m = lastRound[cId];
-        rankedPool.push(m.winner === 'A' ? m.teamA : m.teamB); // winners
-        rankedPool.push(m.winner === 'A' ? m.teamB : m.teamA); // losers
-      });
-      // newOrder covers all players except bottom court losers (14 for 4 courts)
-      const newOrder: string[][] = [rankedPool[0]];
-      for (let i = 1; i < courtOrder.length; i++) {
-        newOrder.push(rankedPool[i * 2], rankedPool[(i - 1) * 2 + 1]);
-      }
-
-      // --- Bench rotation: decide who goes to bench ---
-      const bottomCourtId = courtOrder[courtOrder.length - 1];
-      const bottomMatch = lastRound[bottomCourtId];
-      const bottomLosers: string[] = bottomMatch.winner === 'A'
-        ? [...bottomMatch.teamB] : [...bottomMatch.teamA];
-      const roundNumber = history.length; // rounds completed so far
-
-      const { toBenchIds, message } = selectPlayersForBench({
-        bottomCourtMatch: bottomMatch,
-        waitingCount: waitingPlayers.length,
-        players: roster,
-        currentRound: roundNumber,
-      });
-
-      // Update bench counts for players going to bench
-      if (toBenchIds.length > 0) {
-        const updatedPlayers = applyBenchCounts(roster, toBenchIds, roundNumber);
-        setPlayers(updatedPlayers);
-        setBenchMessage(message);
-        setTimeout(() => setBenchMessage(null), 5000);
-      }
-
-      // Build pool in rally ranking order:
-      // 1. Remove any benched players from the ranked non-bottom groups (handles +3 winner bench)
-      const filteredNewOrder = newOrder.map(group => group.filter(id => !toBenchIds.includes(id)));
-      // 2. Bottom losers who are NOT benched continue playing (at bottom court)
-      const bottomContinuing = bottomLosers.filter(id => !toBenchIds.includes(id));
-      // 3. All current bench players come back in (lowest priority)
-      const comingIn = [...waitingPlayers];
-
-      const totalPool = [
-        ...filteredNewOrder.flat(),
-        ...bottomContinuing,
-        ...comingIn,
-      ];
-
-      playingIds = totalPool.slice(0, needed);
-      waitingIds = toBenchIds.length > 0 ? [...toBenchIds] : totalPool.slice(needed);
+          <div className="flex flex-col sm:flex-row gap-4">
+            <button
+              onClick={() => t.setTournamentFinished(false)}
+              className="px-10 py-5 border-2 border-white/20 text-white font-black rounded-full hover:bg-white/10 transition-all uppercase tracking-widest text-lg"
+            >
+              Back
+            </button>
+            <button
+              onClick={t.resetTournament}
+              className="px-12 py-5 bg-white text-black font-black rounded-full shadow-2xl hover:scale-105 transition-transform uppercase tracking-widest text-lg"
+            >
+              New Session
+            </button>
+          </div>
+        </div>
+      );
     }
 
-    const newMatches: Record<string, Match> = {};
-    courtOrder.forEach((cId, i) => {
-      const p = playingIds.slice(i * 4, (i + 1) * 4);
-      const combos = [
-        { teamA: [p[0], p[3]], teamB: [p[1], p[2]] },
-        { teamA: [p[0], p[2]], teamB: [p[1], p[3]] },
-        { teamA: [p[0], p[1]], teamB: [p[2], p[3]] }
-      ];
-      const scored = combos.map(c => ({
-        ...c,
-        score: (hasPlayedTogetherRecently(c.teamA[0], c.teamA[1]) ? 100 : 0) + (hasPlayedTogetherRecently(c.teamB[0], c.teamB[1]) ? 100 : 0) + getPartnershipCount(c.teamA[0], c.teamA[1]) + getPartnershipCount(c.teamB[0], c.teamB[1])
-      })).sort((a, b) => a.score - b.score);
-      newMatches[cId] = { ...scored[0], winner: null };
-    });
-    if (!isFirst) newRoundPairingsRef.current = true;
-    setCurrentMatches(newMatches);
-    setWaitingPlayers(waitingIds);
-  };
-
-  const handleSwap = (target: {courtId?: string, team?: 'A'|'B', index?: number, isWaitlist?: boolean, pId?: string}) => {
-    if (!isEditMode || !swapSelection) return;
-    const isBenchBottomSwap =
-      (swapSelection.isWaitlist && (target.courtId === bottomCourt || target.courtId === secondBottomCourt)) ||
-      ((swapSelection.courtId === bottomCourt || swapSelection.courtId === secondBottomCourt) && target.isWaitlist);
-    if (!isRoundOne && !isBenchBottomSwap && (swapSelection.courtId !== target.courtId || swapSelection.isWaitlist || target.isWaitlist)) {
-      alert("From Round 2, players can only be swapped within the same court.");
-      setSwapSelection(null);
-      return;
-    }
-    const newMatches = JSON.parse(JSON.stringify(currentMatches));
-    const newWaiting = [...waitingPlayers];
-    const p1 = swapSelection.isWaitlist ? swapSelection.pId! : newMatches[swapSelection.courtId!][swapSelection.team === 'A' ? 'teamA' : 'teamB'][swapSelection.index!];
-    const p2 = target.isWaitlist ? target.pId! : newMatches[target.courtId!][target.team === 'A' ? 'teamA' : 'teamB'][target.index!];
-    if (swapSelection.isWaitlist) newWaiting[newWaiting.indexOf(p1)] = p2;
-    else newMatches[swapSelection.courtId!][swapSelection.team === 'A' ? 'teamA' : 'teamB'][swapSelection.index!] = p2;
-    if (target.isWaitlist) newWaiting[newWaiting.indexOf(p2)] = p1;
-    else newMatches[target.courtId!][target.team === 'A' ? 'teamA' : 'teamB'][target.index!] = p1;
-    setCurrentMatches(newMatches);
-    setWaitingPlayers(newWaiting);
-    setSwapSelection(null);
-  };
-
-  // --- UPDATED LEADERBOARD LOGIC ---
-  const getLeaderboard = () => {
-    const wins: Record<string, number> = {};
-    players.forEach(p => wins[p.id] = 0);
-
-    // Bottom court bonus: +1 once per session the first time a player who has
-    // been on the bottom court is placed on king court (win OR loss).
-    const bonusEnabled = bottomCourt !== kingCourt;
-    const hasBeenOnBottom: Record<string, boolean> = {};
-    const hasReceivedBonus: Record<string, boolean> = {};
-
-    history.forEach((round, index) => {
-      if (bonusEnabled) {
-        const bm = round.matches[bottomCourt];
-        if (bm) [...bm.teamA, ...bm.teamB].forEach(id => { hasBeenOnBottom[id] = true; });
-      }
-
-      // index 0 = Round 1 (Ignore)
-      // index 1 = Round 2, index 2 = Round 3, etc.
-      if (index >= 1) {
-        const km = round.matches[kingCourt];
-        if (km) {
-          // Regular scoring: king court winners get +1
-          if (km.winner) {
-            const winners = km.winner === 'A' ? km.teamA : km.teamB;
-            winners.forEach(wId => { wins[wId] = (wins[wId] || 0) + 1; });
-          }
-          // Bottom court bonus: +1 for any player reaching king court (win OR loss)
-          if (bonusEnabled) {
-            [...km.teamA, ...km.teamB].forEach(pId => {
-              if (hasBeenOnBottom[pId] && !hasReceivedBonus[pId]) {
-                wins[pId] = (wins[pId] || 0) + 1;
-                hasReceivedBonus[pId] = true;
-              }
-            });
-          }
-        }
-      }
-    });
-    // Also check the live round: bonus fires the moment a player is placed on
-    // king court, not just after they win and Next Round is clicked.
-    // history.length >= 1 means this is at least Round 2 (a scoring round).
-    if (bonusEnabled && history.length >= 1) {
-      const km = currentMatches[kingCourt];
-      if (km) {
-        [...km.teamA, ...km.teamB].forEach(pId => {
-          if (hasBeenOnBottom[pId] && !hasReceivedBonus[pId]) {
-            wins[pId] = (wins[pId] || 0) + 1;
-            hasReceivedBonus[pId] = true;
-          }
-        });
-      }
-    }
-
-    return Object.entries(wins).map(([id, winCount]) => ({
-      name: players.find(p => p.id === id)?.name || id,
-      winCount
-    })).sort((a, b) => b.winCount - a.winCount);
-  };
-
-  // Fire the bonus banner the moment new round pairings are set (not on undo/hydration).
-  // newRoundPairingsRef is set to true only inside generatePairings for non-first rounds.
-  useEffect(() => {
-    if (!newRoundPairingsRef.current) return;
-    newRoundPairingsRef.current = false;
-
-    if (bottomCourt === kingCourt) return;
-    const km = currentMatches[kingCourt];
-    if (!km) return;
-
-    // Rebuild who was on bottom court and who already received the bonus from history
-    const onBottom: Set<string> = new Set();
-    const alreadyBonused: Set<string> = new Set();
-    history.forEach((round, index) => {
-      const bm = round.matches[bottomCourt];
-      if (bm) [...bm.teamA, ...bm.teamB].forEach(id => onBottom.add(id));
-      if (index >= 1) {
-        const hkm = round.matches[kingCourt];
-        if (hkm) [...hkm.teamA, ...hkm.teamB].forEach(pId => {
-          if (onBottom.has(pId)) alreadyBonused.add(pId);
-        });
-      }
-    });
-
-    const earners = [...km.teamA, ...km.teamB]
-      .filter(pId => onBottom.has(pId) && !alreadyBonused.has(pId))
-      .map(pId => capitalize(players.find(p => p.id === pId)?.name || pId));
-
-    if (earners.length > 0) {
-      setBottomBonusMessage(`🏅 Bottom court bonus: ${earners.join(' & ')} +1 pt!`);
-      setTimeout(() => setBottomBonusMessage(null), 3000);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentMatches]);
-
-  if (tournamentFinished) {
-    const stats = getLeaderboard();
+    const stats = t.getLeaderboard();
     const grouped = stats.reduce((acc, curr) => {
       if (!acc[curr.winCount]) acc[curr.winCount] = [];
       acc[curr.winCount].push(curr.name);
@@ -363,322 +141,917 @@ export default function Tournament() {
 
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-start text-white p-6 pt-20 font-sans overflow-y-auto">
-        <h1 className="text-5xl font-black italic mb-20 text-amber-400 uppercase tracking-tighter text-center">Final Standings</h1>
+        <h1 className="text-5xl font-black italic mb-20 text-amber-400 uppercase tracking-tighter text-center">
+          Final Standings
+        </h1>
         <div className="flex flex-col md:flex-row mb-4 items-end justify-center gap-6 w-full max-w-5xl pb-10">
           {podium[0].names.length > 0 && (
             <div className="flex flex-col items-center w-full md:w-1/3 order-1 md:order-2">
               <div className="text-center mb-1 min-h-[100px] flex flex-col justify-end">
-                {podium[0].names.map(n => 
-                <div key={n} 
-                className="kahoot-wiggle font-black text-[100px] uppercase text-amber-400 leading-tight" 
-                style={{ 
-                    animationDelay: `${2}s` 
-                  }}
-                > {capitalize(n)}</div>)}
+                {podium[0].names.map(n =>
+                  <div key={n}
+                    className="kahoot-wiggle font-black text-[100px] uppercase text-amber-400 leading-tight"
+                    style={{ animationDelay: '2s' }}
+                  >{t.capitalize(n)}</div>
+                )}
                 <div className="text-[30px] font-black text-amber-600 mt-4">{podium[0].score} WINS</div>
               </div>
-              <div className="bg-amber-600 w-full max-w-[180px] h-50 rounded-t-3xl border-t-8 border-amber-300 shadow-[0_0_60px_rgba(245,158,11,0.4)] flex items-center justify-center text-[100px] font-black text-amber-200">1</div>
+              <div className="bg-amber-600 w-full max-w-[180px] h-50 rounded-t-3xl border-t-8 border-amber-300 shadow-[0_0_60px_rgba(245,158,11,0.4)] flex items-center justify-center text-[100px] font-black text-amber-200">
+                1
+              </div>
             </div>
           )}
         </div>
-          <div className="flex flex-col sm:flex-row gap-4">
-          <button 
-            onClick={() => setTournamentFinished(false)} 
+
+        {/* Full leaderboard */}
+        <div className="w-full max-w-md mb-10 bg-slate-900 rounded-[32px] p-6">
+          <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4 text-center">Full Standings</h3>
+          <div className="space-y-2">
+            {stats.map((e, i) => (
+              <div key={e.id} className="flex justify-between border-b border-slate-800 pb-2">
+                <span className="font-bold text-slate-300">{i + 1}. {t.capitalize(e.name)}</span>
+                <span className="text-amber-400 font-bold">{e.winCount}W</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-4">
+          <button
+            onClick={() => t.setTournamentFinished(false)}
             className="px-10 py-5 border-2 border-white/20 text-white font-black rounded-full hover:bg-white/10 transition-all uppercase tracking-widest text-lg"
           >
             Back to Tournament
           </button>
-          
-          <button 
-            onClick={async () => {if(confirm("Start a brand new session? This clears all data.")){await clearTournament(); localStorage.removeItem('kotc_session'); location.reload();}}} 
+          <button
+            onClick={t.resetTournament}
             className="px-12 py-5 bg-white text-black font-black rounded-full shadow-2xl hover:scale-105 transition-transform uppercase tracking-widest text-lg"
           >
             New Session
           </button>
         </div>
       </div>
-      
     );
   }
 
-  if (!setupComplete) {
+  // ── Setup Screen ────────────────────────────────────────────────────────────
+
+  if (!t.setupComplete) {
+    const isRoundRobin = t.modeConfig.mode === 'round-robin';
+    const isKnockout = t.modeConfig.mode === 'knockout';
+    const isSwiss = t.modeConfig.mode === 'swiss';
+    const isSwissKo = t.modeConfig.mode === 'swiss-ko';
+    const teamSize = t.modeConfig.teamSize ?? 2;
+    const ppc = teamSize * 2;
+    const minPlayers = t.selectedCourts.length * ppc;
+
+    function isPowerOf2(n: number) { return n > 0 && (n & (n - 1)) === 0; }
+    function isValidKnockoutCount(playerCount: number, courtCount: number): boolean {
+      if (playerCount % ppc !== 0) return false;
+      const teams = playerCount / ppc;
+      return isPowerOf2(teams) && teams <= courtCount;
+    }
+    function knockoutHint(): string {
+      const maxTeams = t.selectedCourts.length;
+      const validSizes: number[] = [];
+      for (let t2 = 1; t2 <= maxTeams; t2 = t2 * 2) validSizes.push(t2 * ppc);
+      return `Need ${validSizes.join(', ')} players for a clean bracket (currently ${t.players.length})`;
+    }
+
+    const canStart = isKnockout
+      ? isValidKnockoutCount(t.players.length, t.selectedCourts.length)
+      : t.players.length >= minPlayers && (!(isSwiss || isSwissKo) || t.players.length >= 2);
+
+    function handleSetupSlotClick(target: import('@/app/lib/store/tournament-store').SwapSelection) {
+      const sel = t.setupSwapSelection;
+      if (!sel) {
+        t.setSetupSwapSelection(target);
+        return;
+      }
+      const same =
+        sel.courtId === target.courtId &&
+        sel.team === target.team &&
+        sel.index === target.index &&
+        sel.isWaitlist === target.isWaitlist &&
+        sel.pId === target.pId;
+      if (same) { t.setSetupSwapSelection(null); return; }
+      t.handleSetupSwap(target);
+    }
+
     return (
-      <div className="max-w-4xl mx-auto p-6 py-12 space-y-12 bg-white">
+      <div className="max-w-[1400px] mx-auto p-6 py-10 space-y-8 bg-white">
         <header className="text-center space-y-2">
-          <h1 className="text-5xl font-black italic tracking-tighter text-slate-900 uppercase">Tournament Setup</h1>
+          <h1 className="text-5xl font-black italic tracking-tighter text-slate-900 uppercase">
+            Tournament Setup
+          </h1>
         </header>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          {/* Left Column: Court Config */}
-          <div className="space-y-8">
-            <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100">
-              <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">1. Active Courts</h3>
+
+        {/* Mode Selector */}
+        <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100">
+          <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">
+            0. Game Mode
+          </h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-w-2xl">
+            {([
+              { key: 'rally', label: 'Rally to the Top', desc: 'King of Court' },
+              { key: 'round-robin', label: 'Round Robin', desc: 'Everyone plays' },
+              { key: 'knockout', label: 'Knockout', desc: 'Elimination bracket' },
+              { key: 'swiss', label: 'Swiss', desc: 'Standings-based rounds' },
+              { key: 'swiss-ko', label: 'Swiss → KO', desc: 'Swiss then Elimination' },
+            ] as const).map(({ key, label, desc }) => (
+              <button
+                key={key}
+                onClick={() => t.setModeConfig({
+                  ...t.modeConfig,
+                  mode: key,
+                  ...(key === 'round-robin' ? { legs: t.modeConfig.legs ?? 1 } : {}),
+                  ...(key === 'swiss' ? { swissRounds: t.modeConfig.swissRounds ?? 4 } : {}),
+                  ...(key === 'swiss-ko' ? {
+                    swissRounds: t.modeConfig.swissRounds ?? 4,
+                    swissKoAdvancing: t.modeConfig.swissKoAdvancing ?? 4,
+                  } : {}),
+                })}
+                className={`py-4 px-3 rounded-2xl border-2 font-black transition text-left
+                  ${t.modeConfig.mode === key
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white text-slate-700 border-slate-200 hover:border-indigo-300'}`}
+              >
+                <div className="text-sm uppercase">{label}</div>
+                <div className={`text-[10px] font-bold mt-0.5 ${t.modeConfig.mode === key ? 'text-indigo-200' : 'text-slate-400'}`}>
+                  {desc}
+                </div>
+              </button>
+            ))}
+          </div>
+
+          {/* Singles / Doubles */}
+          <div className="mt-4 flex items-center gap-3">
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Team format</span>
+            {([
+              { size: 1 as const, label: '1v1 · Singles' },
+              { size: 2 as const, label: '2v2 · Doubles' },
+            ]).map(({ size, label }) => (
+              <button
+                key={size}
+                onClick={() => t.setModeConfig({ ...t.modeConfig, teamSize: size })}
+                className={`px-4 py-2 rounded-xl border-2 font-black text-[11px] transition uppercase tracking-wide
+                  ${teamSize === size
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Result recording (RR + KO + Swiss + Swiss-KO) */}
+          {(isRoundRobin || isKnockout || isSwiss || isSwissKo) && (
+            <div className="mt-4 flex items-center gap-3">
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Result recording</span>
+              {([
+                { key: 'win-loss' as const, label: 'Win / Loss' },
+                { key: 'score' as const, label: 'Record Score' },
+              ]).map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => t.setModeConfig({ ...t.modeConfig, recordMode: key })}
+                  className={`px-4 py-2 rounded-xl border-2 font-black text-[11px] transition uppercase tracking-wide
+                    ${(t.modeConfig.recordMode ?? 'win-loss') === key
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Swiss: Rounds config */}
+          {isSwiss && (
+            <div className="mt-4 flex items-center gap-4">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">
+                Rounds
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={t.modeConfig.swissRounds ?? 4}
+                onChange={e => t.setModeConfig({ ...t.modeConfig, swissRounds: Math.max(1, parseInt(e.target.value) || 4) })}
+                className="w-24 px-3 py-2 bg-white border-2 border-slate-200 rounded-xl text-sm font-black text-indigo-600 outline-none focus:border-indigo-600 text-center"
+              />
+              <span className="text-[10px] text-slate-400 font-bold">total rounds</span>
+            </div>
+          )}
+
+          {/* Swiss-KO: Swiss rounds + advancing teams config */}
+          {isSwissKo && (
+            <div className="mt-4 flex flex-wrap items-center gap-4">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">
+                Swiss rounds
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={t.modeConfig.swissRounds ?? 4}
+                onChange={e => t.setModeConfig({ ...t.modeConfig, swissRounds: Math.max(1, parseInt(e.target.value) || 4) })}
+                className="w-20 px-3 py-2 bg-white border-2 border-slate-200 rounded-xl text-sm font-black text-indigo-600 outline-none focus:border-indigo-600 text-center"
+              />
+              <span className="text-slate-200 font-bold">|</span>
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">
+                Advance to KO
+              </label>
+              <input
+                type="number"
+                min={2}
+                value={t.modeConfig.swissKoAdvancing ?? 4}
+                onChange={e => {
+                  const v = Math.max(2, parseInt(e.target.value) || 4);
+                  t.setModeConfig({ ...t.modeConfig, swissKoAdvancing: v });
+                }}
+                className="w-20 px-3 py-2 bg-white border-2 border-slate-200 rounded-xl text-sm font-black text-indigo-600 outline-none focus:border-indigo-600 text-center"
+              />
+              <span className="text-[10px] text-slate-400 font-bold">teams (power of 2)</span>
+            </div>
+          )}
+
+          {/* RR: Legs + max matches config */}
+          {isRoundRobin && (
+            <div className="mt-4 flex flex-wrap items-center gap-4">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">
+                Legs
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={t.modeConfig.legs ?? 1}
+                onChange={e => t.setModeConfig({ ...t.modeConfig, legs: Math.max(1, parseInt(e.target.value) || 1) })}
+                className="w-24 px-3 py-2 bg-white border-2 border-slate-200 rounded-xl text-sm font-black text-indigo-600 outline-none focus:border-indigo-600 text-center"
+              />
+              <span className="text-[10px] text-slate-400 font-bold">times each pair meets</span>
+              <span className="text-slate-200 font-bold">|</span>
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">
+                Max matches / team
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={t.modeConfig.maxMatchesPerTeam ?? ''}
+                placeholder="No limit"
+                onChange={e => {
+                  const v = parseInt(e.target.value);
+                  t.setModeConfig({ ...t.modeConfig, maxMatchesPerTeam: v > 0 ? v : undefined });
+                }}
+                className="w-24 px-3 py-2 bg-white border-2 border-slate-200 rounded-xl text-sm font-black text-indigo-600 outline-none focus:border-indigo-600 text-center placeholder:text-slate-300 placeholder:font-normal"
+              />
+            </div>
+          )}
+        </section>
+
+        {/* 3-column layout */}
+        <div className="flex flex-wrap gap-6 items-start">
+
+          {/* ── Left: Courts + Hierarchy ── */}
+          <div className="w-56 shrink-0 space-y-6">
+            <section className="bg-slate-50 p-5 rounded-[32px] border border-slate-100">
+              <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">
+                1. Active Courts
+              </h3>
               <div className="grid grid-cols-4 gap-2">
-                {availableCourts.map(c => (
-                  <button key={c} onClick={() => setSelectedCourts(p => p.includes(c) ? p.filter(x => x !== c) : [...p, c])}
-                    className={`py-3 rounded-xl font-black transition ${selectedCourts.includes(c) ? 'bg-indigo-600 text-white' : 'bg-white text-slate-300 border border-slate-200'}`}>
+                {t.availableCourts.map(c => (
+                  <button
+                    key={c}
+                    onClick={() => t.setSelectedCourts(p => p.includes(c) ? p.filter(x => x !== c) : [...p, c])}
+                    className={`py-3 rounded-xl font-black transition ${t.selectedCourts.includes(c) ? 'bg-indigo-600 text-white' : 'bg-white text-slate-300 border border-slate-200'}`}
+                  >
                     {c}
                   </button>
                 ))}
               </div>
             </section>
 
-            <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100">
-              <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">2. Hierarchy</h3>
-              <div className="space-y-2">
-                {courtOrder.map((c, i) => (
-                  <div key={c} className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-200">
-                    <span className="font-black text-sm uppercase">Court {c} {i === 0 ? '👑' : ''}</span>
-                    <div className="flex gap-1">
-                      <button onClick={() => moveCourt(i, 'up')} disabled={i === 0} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded-lg disabled:opacity-0 text-xs">↑</button>
-                      <button onClick={() => moveCourt(i, 'down')} disabled={i === courtOrder.length - 1} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded-lg disabled:opacity-0 text-xs">↓</button>
+            {t.modeConfig.mode === 'rally' && (
+              <section className="bg-slate-50 p-5 rounded-[32px] border border-slate-100">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">
+                  2. Hierarchy
+                </h3>
+                <div className="space-y-2">
+                  {t.courtOrder.map((c, i) => (
+                    <div key={c} className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-200">
+                      <span className="font-black text-sm uppercase">
+                        Court {c} {i === 0 ? '👑' : ''}
+                      </span>
+                      <div className="flex gap-1">
+                        <button onClick={() => t.moveCourt(i, 'up')} disabled={i === 0} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded-lg disabled:opacity-0 text-xs">↑</button>
+                        <button onClick={() => t.moveCourt(i, 'down')} disabled={i === t.courtOrder.length - 1} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded-lg disabled:opacity-0 text-xs">↓</button>
+                      </div>
                     </div>
+                  ))}
+                </div>
+              </section>
+            )}
+          </div>
+
+          {/* ── Center: Team Assignment Grid ── */}
+          <div className="flex-1 min-w-[300px] space-y-4">
+            <section className="bg-slate-50 p-5 rounded-[32px] border border-slate-100">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                  {t.modeConfig.mode === 'rally' ? '3' : '2'}. Team Assignment
+                </h3>
+                {t.preAssignment && (
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={t.autoFill}
+                      className="px-3 py-1.5 bg-indigo-600 text-white text-[11px] font-black rounded-xl hover:bg-indigo-700 transition uppercase tracking-wide"
+                    >
+                      Balance by Rating
+                    </button>
+                    <button
+                      onClick={t.shuffleTeams}
+                      className="px-3 py-1.5 bg-white border-2 border-slate-200 text-slate-700 text-[11px] font-black rounded-xl hover:border-indigo-400 transition uppercase tracking-wide"
+                    >
+                      Randomise Teams
+                    </button>
+                    <button
+                      onClick={t.shufflePlayers}
+                      className="px-3 py-1.5 bg-white border-2 border-slate-200 text-slate-700 text-[11px] font-black rounded-xl hover:border-indigo-400 transition uppercase tracking-wide"
+                    >
+                      Randomise Players
+                    </button>
+                    <button
+                      onClick={t.toggleRatingOrder}
+                      className="px-3 py-1.5 bg-white border-2 border-slate-200 text-slate-600 text-[11px] font-black rounded-xl hover:border-indigo-400 transition uppercase tracking-wide"
+                      title={t.ratingOrder === 'highToTop' ? 'Highest rated on top courts' : 'Lowest rated on top courts'}
+                    >
+                      {t.ratingOrder === 'highToTop' ? '↑ Rating → Top' : '↓ Rating → Top'}
+                    </button>
                   </div>
-                ))}
+                )}
               </div>
+
+              {t.preAssignment ? (
+                <>
+                  <div className={`grid gap-3 ${t.selectedCourts.length >= 6 ? 'grid-cols-3' : 'grid-cols-2'}`}>
+                    {t.selectedCourts.map(cId => {
+                      const m = t.preAssignment!.courts[cId];
+                      if (!m) return null;
+                      const isKing = t.modeConfig.mode === 'rally' && cId === t.courtOrder[0];
+                      return (
+                        <div key={cId} className={`bg-white rounded-2xl border-2 overflow-hidden ${isKing ? 'border-amber-400 ring-2 ring-amber-50' : 'border-slate-100'}`}>
+                          <div className={`py-1.5 px-3 text-[11px] text-center font-black uppercase tracking-widest ${isKing ? 'bg-amber-400 text-slate-900' : 'bg-slate-800 text-white'}`}>
+                            Court {cId}{isKing ? ' 👑' : ''}
+                          </div>
+                          <div className="p-2 relative">
+                            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none">
+                              <div className="bg-white px-2 py-0.5 rounded-full border border-slate-100 text-[9px] font-black text-slate-400 italic shadow-sm">VS</div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              {(['A', 'B'] as const).map(teamKey => {
+                                const team = teamKey === 'A' ? m.teamA : m.teamB;
+                                const anySelected = team.some((_, pi) =>
+                                  t.setupSwapSelection?.courtId === cId &&
+                                  t.setupSwapSelection.team === teamKey &&
+                                  t.setupSwapSelection.index === pi,
+                                );
+                                return (
+                                  <div
+                                    key={teamKey}
+                                    className={`flex flex-col gap-1 p-1.5 rounded-xl border-2 transition-colors
+                                      ${anySelected ? 'border-orange-300 bg-orange-50' : 'border-slate-200 bg-slate-50'}`}
+                                  >
+                                    {team.map((pId, playerIdx) => {
+                                      const isSelected =
+                                        t.setupSwapSelection?.courtId === cId &&
+                                        t.setupSwapSelection.team === teamKey &&
+                                        t.setupSwapSelection.index === playerIdx;
+                                      return (
+                                        <button
+                                          key={playerIdx}
+                                          onClick={() => handleSetupSlotClick({ courtId: cId, team: teamKey, index: playerIdx })}
+                                          className={`w-full text-center text-sm py-2 rounded-lg font-bold truncate transition-all
+                                            ${isSelected
+                                              ? 'bg-orange-500 text-white shadow-md'
+                                              : t.setupSwapSelection
+                                                ? 'bg-white text-orange-700 hover:bg-orange-100'
+                                                : 'bg-white text-slate-700 hover:bg-indigo-50 hover:text-indigo-700'
+                                            }`}
+                                        >
+                                          {t.capitalize(pId)}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {t.preAssignment.bench.length > 0 && (
+                    <div className="mt-3 p-3 bg-white rounded-2xl border border-dashed border-slate-200">
+                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">
+                        Bench ({t.preAssignment.bench.length})
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {t.preAssignment.bench.map((pId, idx) => {
+                          const isSelected = t.setupSwapSelection?.isWaitlist && t.setupSwapSelection.pId === pId;
+                          return (
+                            <button
+                              key={idx}
+                              onClick={() => handleSetupSlotClick({ isWaitlist: true, pId })}
+                              className={`px-3 py-1.5 rounded-xl text-sm font-bold transition
+                                ${isSelected
+                                  ? 'bg-orange-500 text-white shadow-md'
+                                  : t.setupSwapSelection
+                                    ? 'bg-orange-50 text-orange-700 border border-orange-200 hover:bg-orange-100'
+                                    : 'bg-slate-100 text-slate-600 hover:bg-indigo-50 hover:text-indigo-700'
+                                }`}
+                            >
+                              {t.capitalize(pId)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {t.setupSwapSelection && (
+                    <p className="mt-2 text-center text-[10px] font-black text-orange-500 uppercase tracking-widest animate-pulse">
+                      Tap another slot to swap · tap same slot to cancel
+                    </p>
+                  )}
+                </>
+              ) : (
+                <div className="py-12 text-center">
+                  <p className="text-slate-300 font-black uppercase text-sm">
+                    {isKnockout
+                      ? knockoutHint()
+                      : `Add ${minPlayers} players to preview team assignment`}
+                  </p>
+                </div>
+              )}
             </section>
           </div>
 
-          {/* Right Column: Advanced Player Input */}
-<div className="space-y-6">
-  <section className="bg-slate-50 p-6 rounded-[32px] border border-slate-100">
-    <div className="flex justify-between items-center mb-4">
-      <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">3. Roster</h3>
-      <span className={`text-[10px] font-black px-2 py-1 rounded-md ${players.length >= selectedCourts.length * 4 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
-        {players.length} / {selectedCourts.length * 4} PLAYERS
-      </span>
-    </div>
+          {/* ── Right: Roster ── */}
+          <div className="w-72 shrink-0 space-y-6">
+            <section className="bg-slate-50 p-5 rounded-[32px] border border-slate-100">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">
+                  {t.modeConfig.mode === 'rally' ? '4' : '3'}. Roster
+                </h3>
+                <span className={`text-[10px] font-black px-2 py-1 rounded-md ${canStart ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                  {t.players.length}{!isKnockout ? ` / ${minPlayers}` : ''}
+                </span>
+              </div>
 
-    {/* Quick Add / Bulk Paste */}
-    <div className="space-y-2 mb-6">
-      <textarea 
-        rows={3} 
-        value={bulkInput} 
-        placeholder="Paste names (e.g. Arthur, Evie, John)"
-        onChange={e => {
-          setBulkInput(e.target.value);
-          const lines = e.target.value.split(/[\n]+/).filter(s => s.trim());
-          const newPlayers = lines.map(line => {
-            const parts = line.split(':'); // Support "Name:Rating"
-            const name = parts[0].trim();
-            const rating = parseFloat(parts[1]) || 3.5;
-            return { id: name, name, rating, benchCount: 0, lastBenchedRound: null } as Player;
-          });
-          setPlayers(newPlayers);
-        }}
-        className="w-full p-4 bg-white rounded-2xl border-none font-bold text-sm outline-none focus:ring-2 focus:ring-indigo-600" 
-      />
-      <p className="text-[9px]  text-slate-400 font-bold px-2 uppercase tracking-tight">Pro tip: Use "Name : Rating" to paste with levels</p>
-    </div>
+              <div className="space-y-1 mb-4">
+                <textarea
+                  rows={2}
+                  value={t.bulkInput}
+                  placeholder="Alice, Bob, Carol  or  Alice:3.5"
+                  onChange={e => {
+                    t.setBulkInput(e.target.value);
+                    const items = e.target.value.split(/[,\n]+/).filter(s => s.trim());
+                    const newPlayers = items.map(item => {
+                      const parts = item.split(':');
+                      const name = parts[0].trim();
+                      const rating = parseFloat(parts[1]) || 3.5;
+                      return { id: name, name, rating, benchCount: 0, lastBenchedRound: null } as Player;
+                    });
+                    t.setPlayers(newPlayers);
+                  }}
+                  className="w-full p-3 bg-white rounded-2xl border-none font-bold text-sm outline-none focus:ring-2 focus:ring-indigo-600 resize-none"
+                />
+                <p className="text-[9px] text-slate-400 font-bold px-1 uppercase tracking-tight">
+                  Comma or line-separated · name:rating to set level
+                </p>
+              </div>
 
-    {/* Visual Player List with Manual Rating Input */}
-<div className="max-h-[350px] overflow-y-auto space-y-2 pr-2 scrollbar-hide">
-  {players.map((p, idx) => (
-    <div key={idx} className="flex items-center justify-between p-3 bg-white border-slate-200 rounded-xl group hover:bg-slate-100 transition-colors">
-      <div className="flex flex-col min-w-0 flex-1">
-        <span className="font-black text-slate-700 truncate text-sm uppercase leading-tight">{p.name}</span>
-        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Player {idx + 1}</span>
-      </div>
-      
-      <div className="flex items-center gap-3">
-        {/* Manual Rating Input Box */}
-        <div className="flex flex-col items-end">
-          <label className="text-[8px] font-black text-slate-400 uppercase mb-1 mr-1">Rating</label>
-          <input 
-            type="number" 
-            step="0.01"
-            value={p.rating}
-            onChange={(e) => {
-              const newVal = parseFloat(e.target.value);
-              const next = [...players];
-              // Update only if it's a valid number, otherwise keep as is for typing
-              next[idx].rating = isNaN(newVal) ? 0 : newVal;
-              setPlayers(next);
-            }}
-            className="w-20 px-2 py-1.5 bg-white border-2 border-slate-200 rounded-lg text-xs font-black text-indigo-600 outline-none focus:border-indigo-600 text-center shadow-sm"
-          />
-        </div>
+              <div className="max-h-[360px] overflow-y-auto space-y-1.5 pr-1 scrollbar-hide">
+                {t.players.map((p, idx) => (
+                  <div key={idx} className="flex items-center gap-2 px-3 py-2 bg-white rounded-xl border border-slate-100 hover:border-slate-200 transition-colors">
+                    <span className="text-[9px] font-bold text-slate-300 w-5 shrink-0 text-right">{idx + 1}</span>
+                    {editingNameIdx === idx ? (
+                      <input
+                        autoFocus
+                        value={editingNameVal}
+                        onChange={e => setEditingNameVal(e.target.value)}
+                        onBlur={() => commitNameEdit(idx)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') commitNameEdit(idx);
+                          if (e.key === 'Escape') setEditingNameIdx(null);
+                        }}
+                        className="flex-1 min-w-0 font-black text-sm text-slate-800 uppercase outline-none border-b-2 border-indigo-500 bg-transparent"
+                      />
+                    ) : (
+                      <button
+                        onClick={() => { setEditingNameIdx(idx); setEditingNameVal(p.name); }}
+                        className="flex-1 min-w-0 text-left font-black text-sm text-slate-700 uppercase truncate hover:text-indigo-600 transition-colors"
+                        title="Click to edit name"
+                      >
+                        {p.name}
+                      </button>
+                    )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={() => adjustRating(idx, -0.5)} disabled={p.rating <= 2.0} className="w-6 h-6 flex items-center justify-center rounded-md bg-slate-100 text-slate-500 hover:bg-slate-200 disabled:opacity-30 text-xs font-black transition">−</button>
+                      <span className="w-8 text-center text-xs font-black text-indigo-600">{p.rating.toFixed(1)}</span>
+                      <button onClick={() => adjustRating(idx, 0.5)} disabled={p.rating >= 6.0} className="w-6 h-6 flex items-center justify-center rounded-md bg-slate-100 text-slate-500 hover:bg-slate-200 disabled:opacity-30 text-xs font-black transition">+</button>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const next = t.players.filter((_, i) => i !== idx);
+                        t.setPlayers(next);
+                        t.setBulkInput(next.map(pl => `${pl.name}:${pl.rating}`).join('\n'));
+                      }}
+                      className="w-6 h-6 shrink-0 flex items-center justify-center text-slate-300 hover:text-red-500 transition-colors"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
 
-        {/* Remove Player Button */}
-        <button 
-          onClick={() => {
-            const next = players.filter((_, i) => i !== idx);
-            setPlayers(next);
-            setBulkInput(next.map(pl => `${pl.name}:${pl.rating}`).join('\n'));
-          }}
-          className="w-9 h-9 mt-4 flex items-center justify-center bg-white text-red-500 rounded-lg border border-slate-200 hover:bg-red-500 hover:text-white transition-all shadow-sm"
-          title="Remove Player"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12"/>
-          </svg>
-        </button>
-      </div>
-    </div>
-  ))}
-  
-  {players.length === 0 && (
-    <div className="py-10 text-center border-2 border-dashed border-slate-100 rounded-2xl">
-      <p className="text-xs font-black text-slate-300 uppercase italic">Waiting for player data...</p>
-    </div>
-  )}
-</div>
-      
+                <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                  <input
+                    ref={addInputRef}
+                    value={addPlayerName}
+                    onChange={e => setAddPlayerName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') addPlayer(); }}
+                    placeholder="Add player..."
+                    className="flex-1 min-w-0 bg-transparent font-bold text-sm text-slate-700 outline-none placeholder:text-slate-300"
+                  />
+                  <button
+                    onClick={addPlayer}
+                    disabled={!addPlayerName.trim()}
+                    className="px-3 py-1 bg-indigo-600 text-white text-xs font-black rounded-lg disabled:opacity-30 transition hover:bg-indigo-700"
+                  >
+                    + Add
+                  </button>
+                </div>
 
-  </section>
+                {t.players.length === 0 && (
+                  <div className="py-6 text-center">
+                    <p className="text-xs font-black text-slate-300 uppercase italic">Paste names above or add one at a time</p>
+                  </div>
+                )}
+              </div>
+            </section>
 
-  <button 
-    disabled={players.length < selectedCourts.length * 4}
-    onClick={() => { generatePairings(true, players, selectedCourts); setSetupComplete(true); }}
-    className="w-full py-6 bg-indigo-600 text-white font-black text-xl rounded-2xl shadow-xl transition-all hover:bg-indigo-700 disabled:bg-slate-100 disabled:text-slate-300 uppercase tracking-widest"
-  >
-    Start Tournament
-  </button>
-</div>
+            {isKnockout && !canStart && t.players.length > 0 && (
+              <p className="text-[10px] font-bold text-amber-600 text-center px-2">
+                {knockoutHint()}
+              </p>
+            )}
+            <button
+              disabled={!canStart}
+              onClick={t.startTournament}
+              className="w-full py-6 bg-indigo-600 text-white font-black text-xl rounded-2xl shadow-xl transition-all hover:bg-indigo-700 disabled:bg-slate-100 disabled:text-slate-300 uppercase tracking-widest"
+            >
+              Start Tournament
+            </button>
+          </div>
+
         </div>
       </div>
     );
   }
 
+  // ── Active Tournament ───────────────────────────────────────────────────────
+
+  const isKnockout = t.modeConfig.mode === 'knockout';
+  const isRoundRobin = t.modeConfig.mode === 'round-robin';
+  const isSwiss = t.modeConfig.mode === 'swiss';
+  const isSwissKo = t.modeConfig.mode === 'swiss-ko';
+  const isSwissKoSwissPhase = isSwissKo && t.swissKoPhase === 'swiss';
+  const isSwissKoKoPhase = isSwissKo && t.swissKoPhase === 'knockout';
+  const recordMode = t.modeConfig.recordMode ?? 'win-loss';
+
+  // RR/Swiss/Swiss-KO(Swiss) use selectedCourts; KO and Swiss-KO(KO) use activeCourts; Rally uses courtOrder.
+  const displayCourts = (isKnockout || isSwissKoKoPhase) && t.activeCourts.length > 0
+    ? t.activeCourts
+    : (isRoundRobin || isSwiss || isSwissKoSwissPhase)
+      ? t.selectedCourts
+      : t.courtOrder;
+
+  // Swiss / Swiss-KO(Swiss): "Next Round" button enabled when all active courts have a result.
+  const swissAllResultsIn = (isSwiss || isSwissKoSwissPhase) && t.selectedCourts.every(c => {
+    const m = t.currentMatches[c];
+    return !m || m.teamA.length === 0 || m.winner !== null;
+  });
+
+  const roundLabel = () => {
+    if (isRoundRobin) {
+      const total = t.totalScheduledMatches;
+      const done = t.completedMatchCount;
+      return total > 0 ? `${done} / ${total} Matches` : 'Round Robin';
+    }
+    if (isSwiss) {
+      const total = t.modeConfig.swissRounds ?? 4;
+      return `Swiss · Round ${t.swissCurrentRound + 1} / ${total}`;
+    }
+    if (isSwissKo) {
+      if (isSwissKoSwissPhase) {
+        const total = t.modeConfig.swissRounds ?? 4;
+        return `Swiss → KO · Swiss Round ${t.swissCurrentRound + 1} / ${total}`;
+      }
+      const teamCount = t.activeCourts.length * 2;
+      if (teamCount <= 2) return 'Swiss → KO · Final';
+      if (teamCount === 4) return 'Swiss → KO · Semifinals';
+      if (teamCount === 8) return 'Swiss → KO · Quarterfinals';
+      return `Swiss → KO · Round of ${teamCount}`;
+    }
+    if (isKnockout) {
+      const teamCount = t.activeCourts.length * 2;
+      if (teamCount <= 2) return 'Final';
+      if (teamCount === 4) return 'Semifinals';
+      if (teamCount === 8) return 'Quarterfinals';
+      return `Round of ${teamCount}`;
+    }
+    return `Round ${t.history.length + 1}`;
+  };
+
+  // allResultsIn gates the Next Round button (Rally + KO + Swiss-KO KO phase only).
+  const allResultsIn = !isRoundRobin && !isSwiss && !isSwissKoSwissPhase && Object.values(t.currentMatches)
+    .filter((_, i) => displayCourts[i] !== undefined)
+    .every(m => m.winner);
+
+  const nextRoundDisabled = !allResultsIn || t.isEditMode;
+
+  // Live teams (currently playing, no winner yet) — for queue conflict display.
+  const liveTeamIds = new Set<string>();
+  Object.values(t.currentMatches).forEach(m => {
+    if (m.teamA.length === 0 || m.winner !== null) return;
+    m.teamA.forEach(id => liveTeamIds.add(id));
+    m.teamB.forEach(id => liveTeamIds.add(id));
+  });
+
   return (
     <div className="mx-auto p-4 lg:p-10">
       <header className="flex flex-wrap justify-between items-center gap-4 mb-10">
         <div>
-          <h1 className="text-4xl font-black italic uppercase tracking-tighter">Round {history.length + 1}</h1>
-          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">King: Court {kingCourt} • Bottom: Court {bottomCourt}</p>
+          <h1 className="text-4xl font-black italic uppercase tracking-tighter">{roundLabel()}</h1>
+          {t.modeConfig.mode === 'rally' && (
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+              King: Court {t.kingCourt} • Bottom: Court {t.bottomCourt}
+            </p>
+          )}
+          {isRoundRobin && (
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+              Round Robin • {t.modeConfig.legs ?? 1} leg{(t.modeConfig.legs ?? 1) > 1 ? 's' : ''}
+              {recordMode === 'score' && ' • Score mode'}
+            </p>
+          )}
+          {isSwiss && (
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+              Swiss System • {t.modeConfig.swissRounds ?? 4} rounds
+              {recordMode === 'score' && ' • Score mode'}
+            </p>
+          )}
+          {isSwissKo && (
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+              {isSwissKoSwissPhase
+                ? `Swiss Phase • ${t.modeConfig.swissRounds ?? 4} rounds • Top ${t.modeConfig.swissKoAdvancing ?? 4} advance`
+                : `Knockout Phase • ${t.modeConfig.swissKoAdvancing ?? 4} teams`}
+              {recordMode === 'score' && ' • Score mode'}
+            </p>
+          )}
         </div>
-        <div className="flex gap-2">
-          <button onClick={() => setShowHistoryModal(true)} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-slate-200 transition">LOG</button>
-          <button onClick={() => { setIsEditMode(!isEditMode); setSwapSelection(null); }}
-            className={`px-6 py-2 rounded-xl font-bold transition ${isEditMode ? 'bg-orange-400 hover:bg-orange-500 text-white shadow-lg transition' : 'hover:bg-slate-200 bg-slate-100 text-slate-600 transition'}`}>{isEditMode ? 'FINISH SWAP' : 'SWAP'}</button>
-          <button onClick={() => { setTournamentFinished(true); firePodiumConfetti(); }} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-emerald-500 hover:text-white transition ">FINISH</button>
-          <button onClick={async () => {if(confirm("R U Sure, Reset?")) {await clearTournament(); localStorage.removeItem('kotc_session'); location.reload();}}} className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition rounded-xl font-black text-xs border border-red-100">RESET</button>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => t.setShowHistoryModal(true)} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-slate-200 transition">LOG</button>
+          {/* SWAP only for Rally (not RR async, not KO) */}
+          {t.modeConfig.mode === 'rally' && (
+            <button
+              onClick={() => { t.setIsEditMode(!t.isEditMode); t.setSwapSelection(null); }}
+              className={`px-6 py-2 rounded-xl font-bold transition ${t.isEditMode ? 'bg-orange-400 hover:bg-orange-500 text-white shadow-lg' : 'hover:bg-slate-200 bg-slate-100 text-slate-600'}`}
+            >
+              {t.isEditMode ? 'FINISH SWAP' : 'SWAP'}
+            </button>
+          )}
+          {/* Swiss-KO KO phase: court swap button */}
+          {isSwissKoKoPhase && !t.tournamentFinished && (
+            <button
+              onClick={() => t.selectKoCourtForSwap(t.koCourtSwapSelection ?? '')}
+              className={`px-5 py-2 rounded-xl font-black text-sm uppercase transition
+                ${t.koCourtSwapSelection
+                  ? 'bg-orange-400 text-white hover:bg-orange-500 shadow-md'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+            >
+              {t.koCourtSwapSelection ? 'Cancel Swap' : 'Swap Courts'}
+            </button>
+          )}
+          {/* Swiss / Swiss-KO(Swiss): Next Round button */}
+          {(isSwiss || isSwissKoSwissPhase) && !t.tournamentFinished && (
+            <button
+              onClick={t.nextSwissRound}
+              disabled={!swissAllResultsIn}
+              className={`px-6 py-2 rounded-xl font-black text-sm uppercase transition
+                ${swissAllResultsIn
+                  ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md'
+                  : 'bg-slate-100 text-slate-300 cursor-not-allowed'}`}
+            >
+              {t.swissCurrentRound + 1 >= (t.modeConfig.swissRounds ?? 4)
+                ? (isSwissKo ? 'Start Knockout →' : 'Finish Swiss')
+                : 'Next Round →'}
+            </button>
+          )}
+          <button onClick={t.finishTournament} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-emerald-500 hover:text-white transition">FINISH</button>
+          <button onClick={() => { if (confirm('R U Sure, Reset?')) t.resetTournament(); }} className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition rounded-xl font-black text-xs border border-red-100">RESET</button>
         </div>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-10">
+        {/* Courts */}
         <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-4">
-          {courtOrder.map((cId) => {
-            const m = currentMatches[cId];
+          {displayCourts.map((cId) => {
+            const m = t.currentMatches[cId];
             if (!m) return null;
+            const isKing = cId === t.kingCourt && t.modeConfig.mode === 'rally';
+            const isBottom = cId === t.bottomCourt && t.modeConfig.mode === 'rally';
+            const isIdle = (isRoundRobin || isSwiss || isSwissKoSwissPhase) && m.teamA.length === 0;
+            const isSwapSelected = isSwissKoKoPhase && t.koCourtSwapSelection === cId;
+            const isSwapTarget = isSwissKoKoPhase && t.koCourtSwapSelection !== null && t.koCourtSwapSelection !== cId && m.winner === null;
+
             return (
-              <div key={cId} className={`bg-white h-fit rounded-[32px] border-2 transition overflow-hidden ${cId === kingCourt ? 'border-amber-400 ring-4 ring-amber-50' : 'border-slate-100'}`}>
-                {/* Court Header */}
-                <div className={`py-2 px-4 text-[15px] text-center font-black uppercase tracking-widest ${cId === kingCourt ? 'bg-amber-400' : cId === bottomCourt ? 'bg-slate-200' : 'bg-slate-800 text-white'}`}>
-                  Court {cId} {cId === kingCourt ? '👑' : cId === bottomCourt ? '⬇️' : ''}
+              <div key={cId} className={`bg-white h-fit rounded-[32px] border-2 transition overflow-hidden
+                ${isSwapSelected ? 'border-orange-400 ring-4 ring-orange-50' : isKing ? 'border-amber-400 ring-4 ring-amber-50' : isIdle ? 'border-slate-100 opacity-60' : isSwapTarget ? 'border-indigo-300 ring-2 ring-indigo-50' : 'border-slate-100'}`}
+              >
+                <div
+                  onClick={() => isSwissKoKoPhase && m.winner === null && !isIdle ? t.selectKoCourtForSwap(cId) : undefined}
+                  className={`py-2 px-4 text-[15px] text-center font-black uppercase tracking-widest
+                    ${isSwapSelected ? 'bg-orange-400 text-white' : isKing ? 'bg-amber-400' : isBottom ? 'bg-slate-200' : 'bg-slate-800 text-white'}
+                    ${isSwissKoKoPhase && m.winner === null && !isIdle ? 'cursor-pointer select-none' : ''}`}
+                >
+                  Court {cId}
+                  {isKing ? ' 👑' : isBottom ? ' ⬇️' : ''}
+                  {(isKnockout || isSwissKoKoPhase) ? ' ⚔️' : ''}
+                  {isSwapSelected ? ' ←' : isSwapTarget ? ' ↔' : ''}
                 </div>
 
-                {/* Match Grid Area */}
-                <div className="p-4 relative">
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
-                    <div className="bg-white px-3 py-1 rounded-full border-2 border-slate-100 text-[11px] font-black text-slate-400 italic shadow-sm">
-                      VS
+                {isIdle ? (
+                  /* Idle court — all queue matches for this court are done or waiting */
+                  <div className="p-6 text-center">
+                    <p className="text-slate-400 font-black uppercase text-sm mb-3">All matches played</p>
+                    {t.matchQueue.length > 0 && (
+                      <button
+                        onClick={() => t.setQueueSelectCourtId(t.queueSelectCourtId === cId ? null : cId)}
+                        className={`px-4 py-2 rounded-xl text-[11px] font-black uppercase transition
+                          ${t.queueSelectCourtId === cId
+                            ? 'bg-orange-500 text-white'
+                            : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                      >
+                        {t.queueSelectCourtId === cId ? 'Cancel' : 'Assign Match'}
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-4 relative">
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+                      <div className="bg-white px-3 py-1 rounded-full border-2 border-slate-100 text-[11px] font-black text-slate-400 italic shadow-sm">VS</div>
                     </div>
-                  </div>
+                    <div className="grid grid-cols-2 gap-10">
+                      {(['A', 'B'] as const).map((teamKey) => {
+                        const team = teamKey === 'A' ? m.teamA : m.teamB;
+                        const score = teamKey === 'A' ? m.scoreA : m.scoreB;
+                        const isRepeat = t.modeConfig.mode === 'rally' && (t.modeConfig.teamSize ?? 2) > 1 && team.length > 1 && t.hasPlayedTogether(team[0], team[1]);
+                        return (
+                          <div key={teamKey} className="relative">
+                            <div
+                              onClick={() => {
+                                if (t.isEditMode) return;
+                                t.setCurrentMatches({
+                                  ...t.currentMatches,
+                                  [cId]: { ...m, winner: m.winner === teamKey ? null : teamKey },
+                                });
+                              }}
+                              className={`flex flex-col gap-2 p-4 rounded-2xl border-2 transition cursor-pointer
+                                ${m.winner === teamKey ? 'bg-indigo-50 border-indigo-500 shadow-inner' : 'bg-slate-50 border-transparent hover:border-slate-200'}`}
+                            >
+                              {team.map((pId, idx) => {
+                                const isSelected = t.swapSelection?.courtId === cId && t.swapSelection.team === teamKey && t.swapSelection.index === idx;
+                                const isBenchSelected = t.swapSelection?.isWaitlist === true;
+                                const isDimmed = !t.isRoundOne && !!t.swapSelection && t.swapSelection.courtId !== cId && !isBenchSelected;
+                                const isCourtGreyed = t.isEditMode && isBenchSelected && cId !== t.bottomCourt && cId !== t.secondBottomCourt;
+                                const isEliminated = (isKnockout || isSwissKoKoPhase) && t.knockoutState.eliminatedPlayerIds.includes(pId);
+                                return (
+                                  <span
+                                    key={idx}
+                                    onClick={(e) => {
+                                      if (t.isEditMode && !isDimmed) {
+                                        e.stopPropagation();
+                                        if (isSelected) { t.setSwapSelection(null); return; }
+                                        if (!t.swapSelection) t.setSwapSelection({ courtId: cId, team: teamKey, index: idx });
+                                        else t.handleSwap({ courtId: cId, team: teamKey, index: idx });
+                                      }
+                                    }}
+                                    className={`w-full text-center text-[20px] py-4 rounded-xl font-bold truncate transition-all
+                                      ${t.isEditMode ? 'bg-orange-100 text-orange-800 cursor-pointer' : ''}
+                                      ${isSelected ? '!bg-orange-600 !text-white shadow-md' : ''}
+                                      ${isDimmed || isCourtGreyed ? 'opacity-20 grayscale' : ''}
+                                      ${isEliminated ? 'line-through opacity-40' : ''}`}
+                                  >
+                                    {t.capitalize(pId)}
+                                  </span>
+                                );
+                              })}
 
-                  <div className="grid grid-cols-2 gap-10">
-                  {['A', 'B'].map((teamKey) => {
-                    const team = teamKey === 'A' ? m.teamA : m.teamB;
-                    const isRepeat = hasPlayedTogetherRecently(team[0], team[1]);
-                    return (
-                      <div key={teamKey} className="relative">
-                        <div onClick={() => !isEditMode && setCurrentMatches({...currentMatches, [cId]: {...m, winner: m.winner === teamKey ? null : teamKey as 'A'|'B'}})}
-                          className={`flex flex-col gap-2 p-4 rounded-2xl border-2 transition cursor-pointer ${m.winner === teamKey ? 'bg-indigo-50 border-indigo-500 shadow-inner' : 'bg-slate-50 border-transparent hover:border-slate-200'}`}>
-                          {team.map((pId, idx) => {
-                            const isSelected = swapSelection?.courtId === cId && swapSelection.team === teamKey && swapSelection.index === idx;
-                            const isBenchSelected = swapSelection?.isWaitlist === true;
-                            const isDimmed = !isRoundOne && !!swapSelection && swapSelection.courtId !== cId && !isBenchSelected;
-                            const isBottomOrSecondBottom = cId === bottomCourt || cId === secondBottomCourt;
-                            const isCourtGreyed = isEditMode && isBenchSelected && !isBottomOrSecondBottom;
-                            return (
-                              <span
-                                key={idx}
-                                onClick={(e) => {
-                                  if (isEditMode && !isDimmed) {
-                                    e.stopPropagation();
-                                    if (isSelected) { setSwapSelection(null); return; }
-                                    if (!swapSelection) setSwapSelection({ courtId: cId, team: teamKey as 'A'|'B', index: idx });
-                                    else handleSwap({ courtId: cId, team: teamKey as 'A'|'B', index: idx });
-                                  }
-                                }}
-                                className={`w-full text-center text-[20px] py-4 rounded-xl font-bold truncate transition-all
-                                  ${isEditMode ? 'bg-orange-100 text-orange-800 cursor-pointer' : ''}
-                                  ${isSelected ? '!bg-orange-600 !text-white shadow-md' : ''}
-                                  ${isDimmed || isCourtGreyed ? 'opacity-20 grayscale' : ''}`}
-                              >
-                                {capitalize(pId)}
-                              </span>
-                            );
-                          })}
-                        </div>
-                        {isRepeat && <div className="absolute -top-2 -right-1 bg-red-600 text-white text-[8px] px-2 py-0.5 rounded-full font-black animate-pulse shadow-sm z-10 uppercase">Repeat Partner</div>}
+                              {/* Score input — score mode only */}
+                              {recordMode === 'score' && (
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={score?.toString() ?? ''}
+                                  placeholder="0"
+                                  onClick={e => e.stopPropagation()}
+                                  onChange={e => handleScoreInput(cId, teamKey, e.target.value)}
+                                  className={`w-full mt-1 text-center text-2xl font-black border-2 rounded-xl p-2 outline-none transition
+                                    ${m.winner === teamKey ? 'border-indigo-400 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-700 focus:border-indigo-400'}`}
+                                />
+                              )}
+                            </div>
 
-                      </div>
-                    );
-                  })}
+                            {isRepeat && (
+                              <div className="absolute -top-2 -right-1 bg-red-600 text-white text-[8px] px-2 py-0.5 rounded-full font-black animate-pulse shadow-sm z-10 uppercase">
+                                Repeat Partner
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Async RR: confirm button appears when winner is set */}
+                    {isRoundRobin && m.winner && (
+                      <button
+                        onClick={() => t.confirmCourtResult(cId)}
+                        className="mt-4 w-full py-3 bg-green-600 text-white font-black text-sm rounded-2xl uppercase tracking-wide hover:bg-green-700 transition shadow-sm"
+                      >
+                        Confirm & Next Match →
+                      </button>
+                    )}
                   </div>
-                </div>
+                )}
               </div>
             );
           })}
         </div>
 
-        
+        {/* Sidebar */}
         <aside className="space-y-6">
-          <div className="md:col-span-2 flex gap-4 mt-6">
-            <button disabled={!Object.values(currentMatches).every(m => m.winner) || isEditMode}
-              onClick={() => {
-                // Save players snapshot BEFORE bench count update so undo can revert
-                setHistory([...history, { id: history.length, matches: {...currentMatches}, waiting: [...waitingPlayers], players: [...players] }]);
-                generatePairings(false, players, selectedCourts);
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }}
-              className="flex-[2] py-6 bg-indigo-600 text-white font-black text-xl rounded-3xl shadow-xl disabled:bg-slate-200 uppercase transition">Next Round →</button>
-          </div>
-          <div className="md:col-span-2 flex gap-4 mt-6">
-            <button onClick={() => {
-              if (history.length > 0) {
-                const ph = [...history];
-                const last = ph.pop();
-                if (last) {
-                  setCurrentMatches(last.matches);
-                  setWaitingPlayers(last.waiting);
-                  if (last.players) setPlayers(last.players); // revert bench counts
-                  setHistory(ph);
-                  setBenchMessage(null);
-                  setBottomBonusMessage(null);
-                }
-              }
-            }} disabled={history.length === 0} className="flex-1 py-6 bg-slate-400 text-white font-black text-xl rounded-3xl disabled:opacity-10 transition duration-300 opacity-50 hover:opacity-100">UNDO</button>
-            </div>
-          {bottomBonusMessage && (
-            <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl text-sm font-bold text-amber-800 leading-tight">
-              {bottomBonusMessage}
+          {/* Next Round / Bracket button — Rally, KO, Swiss-KO KO phase (not RR, not Swiss, not Swiss-KO Swiss phase) */}
+          {!isRoundRobin && !isSwiss && !isSwissKoSwissPhase && (
+            <div className="flex gap-4 mt-6">
+              <button
+                disabled={nextRoundDisabled}
+                onClick={t.nextRound}
+                className="flex-[2] py-6 bg-indigo-600 text-white font-black text-xl rounded-3xl shadow-xl disabled:bg-slate-200 uppercase transition"
+              >
+                {(isKnockout || isSwissKoKoPhase) ? 'Next Bracket Round →' : 'Next Round →'}
+              </button>
             </div>
           )}
-          {/* --- BENCH SECTION --- */}
-          {waitingPlayers.length > 0 && (
+
+          <div className="flex gap-4">
+            <button
+              onClick={t.undoRound}
+              disabled={t.history.length === 0}
+              className="flex-1 py-6 bg-slate-400 text-white font-black text-xl rounded-3xl disabled:opacity-10 transition duration-300 opacity-50 hover:opacity-100"
+            >
+              UNDO
+            </button>
+          </div>
+
+          {t.bottomBonusMessage && (
+            <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl text-sm font-bold text-amber-800 leading-tight">
+              {t.bottomBonusMessage}
+            </div>
+          )}
+
+          {/* Rally bench */}
+          {t.modeConfig.mode === 'rally' && t.waitingPlayers.length > 0 && (
             <div className="bg-slate-50 rounded-[32px] p-5 border-2 border-slate-200">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest">
-                  Bench ({waitingPlayers.length})
+                  Bench ({t.waitingPlayers.length})
                 </h3>
                 <span className="text-[9px] font-bold text-slate-400 uppercase">tap to swap • bottom 2 courts</span>
               </div>
-
-              {benchMessage && (
+              {t.benchMessage && (
                 <div className="mb-3 p-2 bg-blue-50 border border-blue-200 rounded-xl text-[10px] font-bold text-blue-700 leading-tight">
-                  {benchMessage}
+                  {t.benchMessage}
                 </div>
               )}
-
               <div className="space-y-2">
-                {waitingPlayers.map(pId => {
-                  const player = players.find(p => p.id === pId);
+                {t.waitingPlayers.map(pId => {
+                  const player = t.players.find(p => p.id === pId);
                   if (!player) return null;
-                  const isSelected = swapSelection?.isWaitlist === true && swapSelection.pId === pId;
-                  const isGreyed = isEditMode && !!swapSelection && !swapSelection?.isWaitlist
-                    && !(swapSelection?.courtId === bottomCourt || swapSelection?.courtId === secondBottomCourt)
+                  const isSelected = t.swapSelection?.isWaitlist === true && t.swapSelection.pId === pId;
+                  const isGreyed = t.isEditMode && !!t.swapSelection && !t.swapSelection?.isWaitlist
+                    && !(t.swapSelection?.courtId === t.bottomCourt || t.swapSelection?.courtId === t.secondBottomCourt)
                     && !isSelected;
                   const badge = (player.benchCount ?? 0) === 0 ? 'bg-green-100 text-green-700'
                     : (player.benchCount ?? 0) <= 2 ? 'bg-yellow-100 text-yellow-700'
@@ -687,29 +1060,25 @@ export default function Tournament() {
                     <div
                       key={pId}
                       onClick={() => {
-                        if (!isEditMode) return;
-                        if (isSelected) { setSwapSelection(null); return; }
-                        if (!swapSelection) {
-                          setSwapSelection({ isWaitlist: true, pId });
-                        } else if ((swapSelection.courtId === bottomCourt || swapSelection.courtId === secondBottomCourt) && !swapSelection.isWaitlist) {
-                          handleSwap({ isWaitlist: true, pId });
-                        } else if (swapSelection.isWaitlist) {
-                          setSwapSelection({ isWaitlist: true, pId });
+                        if (!t.isEditMode) return;
+                        if (isSelected) { t.setSwapSelection(null); return; }
+                        if (!t.swapSelection) {
+                          t.setSwapSelection({ isWaitlist: true, pId });
+                        } else if ((t.swapSelection.courtId === t.bottomCourt || t.swapSelection.courtId === t.secondBottomCourt) && !t.swapSelection.isWaitlist) {
+                          t.handleSwap({ isWaitlist: true, pId });
+                        } else if (t.swapSelection.isWaitlist) {
+                          t.setSwapSelection({ isWaitlist: true, pId });
                         } else {
-                          setSwapSelection(null);
+                          t.setSwapSelection(null);
                         }
                       }}
                       className={`flex items-center justify-between p-3 rounded-xl border-2 select-none transition-all
-                        ${isEditMode ? 'cursor-pointer' : ''}
-                        ${isSelected
-                          ? 'bg-orange-600 border-orange-600 shadow-md'
-                          : isEditMode
-                          ? 'bg-orange-100 border-orange-200'
-                          : 'bg-white border-slate-200'}
+                        ${t.isEditMode ? 'cursor-pointer' : ''}
+                        ${isSelected ? 'bg-orange-600 border-orange-600 shadow-md' : t.isEditMode ? 'bg-orange-100 border-orange-200' : 'bg-white border-slate-200'}
                         ${isGreyed ? 'opacity-20 grayscale' : ''}`}
                     >
-                      <span className={`font-black text-sm uppercase ${isSelected ? 'text-white' : isEditMode ? 'text-orange-800' : 'text-slate-800'}`}>
-                        {capitalize(player.name)}
+                      <span className={`font-black text-sm uppercase ${isSelected ? 'text-white' : t.isEditMode ? 'text-orange-800' : 'text-slate-800'}`}>
+                        {t.capitalize(player.name)}
                       </span>
                       <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${isSelected ? 'bg-white/20 text-white' : badge}`}>
                         benched {player.benchCount ?? 0}×
@@ -721,148 +1090,221 @@ export default function Tournament() {
             </div>
           )}
 
-          <div className="bg-slate-900 text-white p-8 rounded-[40px] shadow-2xl">
-            <h2 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-center">Leaderboard</h2>
-            <div className="space-y-4">
-              {getLeaderboard().slice(0, 8).map((e, i) => (
-                <div key={e.name} className="flex justify-between border-b border-slate-800 pb-2">
-                  <span className="font-bold text-slate-400">{i+1}. {capitalize(e.name)}</span>
-                  <span className="text-amber-400 font-bold">{e.winCount}</span>
-                </div>
-              ))}
+          {/* Async RR: Match Queue */}
+          {isRoundRobin && (
+            <div className="bg-slate-50 rounded-[32px] p-5 border-2 border-slate-200">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest">
+                  Upcoming ({t.matchQueue.length})
+                </h3>
+                {t.queueSelectCourtId && (
+                  <span className="text-[9px] font-bold text-orange-500 uppercase animate-pulse">
+                    Select for Court {t.queueSelectCourtId}
+                  </span>
+                )}
+              </div>
+              <div className="space-y-1.5 max-h-56 overflow-y-auto scrollbar-hide">
+                {t.matchQueue.map(sm => {
+                  const isConflict = sm.teamA.some(id => liveTeamIds.has(id)) || sm.teamB.some(id => liveTeamIds.has(id));
+                  const isSelectable = !!t.queueSelectCourtId && !isConflict;
+                  return (
+                    <div
+                      key={sm.id}
+                      onClick={() => isSelectable && t.selectQueueMatch(t.queueSelectCourtId!, sm.id)}
+                      className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs font-bold transition
+                        ${isConflict
+                          ? 'opacity-40 border-slate-100 bg-white cursor-default'
+                          : isSelectable
+                            ? 'cursor-pointer border-orange-300 bg-orange-50 hover:bg-orange-100 text-orange-800'
+                            : 'border-slate-200 bg-white text-slate-700'}`}
+                    >
+                      <span className="flex-1 truncate">
+                        {sm.teamA.map(id => t.capitalize(id)).join(' & ')}
+                      </span>
+                      <span className="text-slate-300 text-[9px] shrink-0">vs</span>
+                      <span className="flex-1 truncate text-right">
+                        {sm.teamB.map(id => t.capitalize(id)).join(' & ')}
+                      </span>
+                      {isConflict && (
+                        <span className="text-[8px] text-slate-300 shrink-0">live</span>
+                      )}
+                    </div>
+                  );
+                })}
+                {t.matchQueue.length === 0 && (
+                  <p className="text-center text-[10px] text-slate-400 font-black uppercase py-3">All matches assigned</p>
+                )}
+              </div>
             </div>
-          </div>
+          )}
 
+          {/* KO / Swiss-KO KO phase: Bracket view + KO Leaderboard */}
+          {(isKnockout || isSwissKoKoPhase) && (
+            <>
+              <BracketView
+                players={t.players}
+                history={t.history}
+                currentMatches={t.currentMatches}
+                activeCourts={t.activeCourts}
+                knockoutState={t.knockoutState}
+                champions={t.champions}
+                capitalize={t.capitalize}
+              />
+              <div className="bg-slate-900 text-white p-6 rounded-[32px] shadow-xl">
+                <h2 className="text-lg font-black italic mb-4 tracking-tighter uppercase text-center">Standings</h2>
+                {(() => {
+                  const koBoard = t.getKOLeaderboard();
+                  const active = koBoard.filter(e => !e.eliminated);
+                  const eliminated = koBoard.filter(e => e.eliminated);
+                  return (
+                    <>
+                      {active.length > 0 && (
+                        <div className="mb-4">
+                          <p className="text-[9px] font-black text-green-400 uppercase tracking-widest mb-2">Remaining</p>
+                          <div className="space-y-2">
+                            {active.map((e, i) => (
+                              <div key={e.id} className="flex justify-between border-b border-slate-800 pb-1.5">
+                                <span className="font-bold text-slate-300 text-sm">{i + 1}. {t.capitalize(e.teamLabel)}</span>
+                                <span className="text-amber-400 font-bold text-sm">{e.wins}W</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {eliminated.length > 0 && (
+                        <div>
+                          <p className="text-[9px] font-black text-red-400 uppercase tracking-widest mb-2">Eliminated</p>
+                          <div className="space-y-1">
+                            {eliminated.map(e => (
+                              <div key={e.id} className="flex justify-between pb-1">
+                                <span className="font-bold text-slate-500 text-xs line-through">{t.capitalize(e.teamLabel)}</span>
+                                <span className="text-slate-600 font-bold text-xs">{e.wins}W</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            </>
+          )}
+
+          {/* Rally + RR + Swiss + Swiss-KO(Swiss phase): Leaderboard */}
+          {!isKnockout && !isSwissKoKoPhase && (
+            <div className="bg-slate-900 text-white p-8 rounded-[40px] shadow-2xl">
+              <h2 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-center">Leaderboard</h2>
+              <div className="space-y-4">
+                {t.getLeaderboard().slice(0, 8).map((e, i) => (
+                  <div key={e.id} className="flex justify-between border-b border-slate-800 pb-2">
+                    <span className="font-bold text-slate-400">{i + 1}. {t.capitalize(e.name)}</span>
+                    <span className="text-amber-400 font-bold">{e.winCount}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </aside>
       </div>
 
-      {/* --- HISTORY LOG MODAL --- */}
-      {showHistoryModal && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-[100] p-4 lg:p-10" onClick={() => setShowHistoryModal(false)}>
+      {/* History Modal */}
+      {t.showHistoryModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-[100] p-4 lg:p-10" onClick={() => t.setShowHistoryModal(false)}>
           <div className="bg-white rounded-[40px] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
             <header className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50">
               <div>
                 <h2 className="text-4xl font-black italic uppercase tracking-tighter text-slate-900">Match Log</h2>
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">{history.length} Rounds Completed</p>
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+                  {isRoundRobin ? `${t.history.length} Matches Completed` : (isSwiss || isSwissKo) ? `${t.history.length} Rounds Completed` : `${t.history.length} Rounds Completed`}
+                </p>
               </div>
-              <button onClick={() => setShowHistoryModal(false)} className="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-sm hover:scale-110 transition active:scale-95 font-bold text-xl border border-slate-200">×</button>
+              <button onClick={() => t.setShowHistoryModal(false)} className="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-sm hover:scale-110 transition active:scale-95 font-bold text-xl border border-slate-200">×</button>
             </header>
-            
             <div className="flex-1 overflow-y-auto p-8 space-y-12">
-              {history.length === 0 ? (
+              {t.history.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-20 text-slate-300">
                   <div className="text-6xl mb-4">📓</div>
-                  <p className="font-black uppercase tracking-widest">No rounds recorded yet</p>
+                  <p className="font-black uppercase tracking-widest">No matches recorded yet</p>
                 </div>
               ) : (
-                [...history].reverse().map((round, rIdx) => {
-                  const currentRoundNum = history.length - rIdx;
+                [...t.history].reverse().map((round, rIdx) => {
+                  const currentRoundNum = t.history.length - rIdx;
+                  const courtIds = (isRoundRobin || isSwiss || isSwissKo) ? Object.keys(round.matches) : t.courtOrder;
                   return (
                     <div key={rIdx} className="space-y-6">
                       <div className="flex items-center gap-4">
                         <div className="h-px flex-1 bg-slate-100"></div>
                         <div className="flex flex-col items-center">
-                          <h3 className="font-black text-indigo-600 uppercase tracking-tighter text-xl italic">Round {currentRoundNum}</h3>
-                          {currentRoundNum === 1 && <span className="text-[10px] font-black text-red-400 uppercase">Seeding Only</span>}
+                          <h3 className="font-black text-indigo-600 uppercase tracking-tighter text-xl italic">
+                            {isRoundRobin ? `Match ${currentRoundNum}` : isSwiss ? `Swiss Round ${currentRoundNum}` : isSwissKo ? `Round ${currentRoundNum}` : `Round ${currentRoundNum}`}
+                          </h3>
+                          {currentRoundNum === 1 && t.modeConfig.mode === 'rally' && (
+                            <span className="text-[10px] font-black text-red-400 uppercase">Seeding Only</span>
+                          )}
                         </div>
                         <div className="h-px flex-1 bg-slate-100"></div>
                       </div>
-                      
-                      <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-  {courtOrder.map((cId) => {
-    const m = round.matches[cId];
-    if (!m) return null;
-
-    const isKing = cId === kingCourt;
-    const isBottom = cId === bottomCourt;
-    // Note: currentRoundNum should be history.length + 1
-    const currentRoundNum = history.length + 1;
-    const countsForPoints = isKing && currentRoundNum > 1;
-
-    return (
-      <div 
-        key={cId} 
-        className={`rounded-[32px] border-2 transition-all overflow-hidden shadow-sm 
-          ${countsForPoints ? 'bg-amber-50 border-amber-400 ring-4 ring-amber-100' : 'bg-white border-slate-100'}`}
-      >
-        {/* Court Header - Styled like the first code but with functional icons */}
-        <div className={`py-2 px-4 text-[13px] font-black uppercase tracking-widest flex justify-between items-center
-          ${isKing ? 'bg-amber-400 text-slate-900' : isBottom ? 'bg-slate-200 text-slate-600' : 'bg-slate-800 text-white'}`}>
-          <span>Court {cId}</span>
-          {isKing && <span>{countsForPoints ? '👑 King Court (Points Active)' : '👑 King Court'}</span>}
-          {isBottom && <span>⬇️ Bottom Court</span>}
-        </div>
-
-        <div className="p-2 relative">
-          {/* The Central "VS" Badge - From Code 2 */}
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
-            <div className="bg-white px-3 py-1 rounded-full border-2 border-slate-100 text-[11px] font-black text-slate-400 italic shadow-sm">
-              VS
-            </div>
-          </div>
-
-          {/* The 2x2 Functional Grid */}
-          <div className="grid grid-cols-2 gap-4">
-            {['A', 'B'].map((teamKey) => {
-              const team = teamKey === 'A' ? m.teamA : m.teamB;
-              const isWinner = m.winner === teamKey;
-              
-              return (
-                <div 
-                  key={teamKey} 
-                  onClick={() => {
-                    // Winner Selection Logic from Code 2
-                    const newMatches = { ...currentMatches };
-                    newMatches[cId] = { ...m, winner: teamKey as 'A' | 'B' };
-                    setCurrentMatches(newMatches);
-                  }}
-                  className={`flex flex-col gap-0 rounded-2xl border-2 transition-all cursor-pointer
-                    ${isWinner 
-                      ? (countsForPoints ? 'bg-amber-500 border-transparent shadow-lg scale-[1.02]' : 'bg-indigo-600 border-transparent shadow-lg scale-[1.02]') 
-                      : 'bg-slate-50 border-transparent hover:border-slate-200'}`}
-                >
-                  {team.map((pId, idx) => {
-                    const active = swapSelection?.courtId === cId && swapSelection.team === teamKey && swapSelection.index === idx;
-                    const disabled = !isRoundOne && swapSelection && swapSelection.courtId !== cId;
-                    
-                    return (
-                      <span 
-                        key={idx} 
-                        onClick={(e) => {
-                          // Swapping Logic from Code 2
-                          if (isEditMode && !disabled) { 
-                            e.stopPropagation(); 
-                            if (!swapSelection) setSwapSelection({courtId: cId, team: teamKey as 'A'|'B', index: idx}); 
-                            else handleSwap({courtId: cId, team: teamKey as 'A'|'B', index: idx}); 
-                          }
-                        }}
-                        className={`w-full text-center text-[18px] py-3 rounded-xl font-bold transition-all break-words leading-tight
-                          ${isWinner ? 'text-white' : (isEditMode ? 'bg-orange-100 text-orange-800' : 'text-slate-800')} 
-                          ${active ? 'bg-orange-600 text-white ring-4 ring-orange-200' : ''} 
-                          ${disabled ? 'opacity-20 grayscale' : ''}`}
-                      >
-                        {capitalize(pId)}
-                      </span>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    );
-  })}
-</div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                        {courtIds.map((cId) => {
+                          const m = round.matches[cId];
+                          if (!m) return null;
+                          const isKingCourt = cId === t.kingCourt && t.modeConfig.mode === 'rally';
+                          const isBottomCourt = cId === t.bottomCourt && t.modeConfig.mode === 'rally';
+                          const countsForPoints = isKingCourt && currentRoundNum > 1;
+                          return (
+                            <div key={cId} className={`rounded-[32px] border-2 overflow-hidden shadow-sm ${countsForPoints ? 'bg-amber-50 border-amber-400 ring-4 ring-amber-100' : 'bg-white border-slate-100'}`}>
+                              <div className={`py-2 px-4 text-[13px] font-black uppercase tracking-widest flex justify-between items-center
+                                ${isKingCourt ? 'bg-amber-400 text-slate-900' : isBottomCourt ? 'bg-slate-200 text-slate-600' : 'bg-slate-800 text-white'}`}>
+                                <span>Court {cId}</span>
+                                {isKingCourt && <span>{countsForPoints ? '👑 Points Active' : '👑'}</span>}
+                                {isBottomCourt && <span>⬇️</span>}
+                              </div>
+                              <div className="p-2 relative">
+                                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+                                  <div className="bg-white px-3 py-1 rounded-full border-2 border-slate-100 text-[11px] font-black text-slate-400 italic shadow-sm">VS</div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                  {(['A', 'B'] as const).map((teamKey) => {
+                                    const team = teamKey === 'A' ? m.teamA : m.teamB;
+                                    const isWinner = m.winner === teamKey;
+                                    const score = teamKey === 'A' ? m.scoreA : m.scoreB;
+                                    return (
+                                      <div key={teamKey}
+                                        className={`flex flex-col rounded-2xl border-2 transition-all
+                                          ${isWinner ? (countsForPoints ? 'bg-amber-500 border-transparent shadow-lg scale-[1.02]' : 'bg-indigo-600 border-transparent shadow-lg scale-[1.02]') : 'bg-slate-50 border-transparent'}`}
+                                      >
+                                        {team.map((pId, idx) => (
+                                          <span key={idx}
+                                            className={`w-full text-center text-[18px] py-3 px-1 rounded-xl font-bold leading-tight
+                                              ${isWinner ? 'text-white' : 'text-slate-800'}`}
+                                          >
+                                            {t.capitalize(pId)}
+                                          </span>
+                                        ))}
+                                        {score !== undefined && (
+                                          <span className={`text-center text-xl font-black pb-2 ${isWinner ? 'text-white/90' : 'text-slate-500'}`}>
+                                            {score}
+                                          </span>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                       {round.waiting.length > 0 && (
                         <div className="rounded-[32px] bg-slate-50 border-2 border-slate-100 p-5">
                           <div className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-3">On Bench</div>
                           <div className="flex flex-wrap gap-2">
                             {round.waiting.map(pId => {
-                              const player = players.find(p => p.id === pId);
+                              const player = t.players.find(p => p.id === pId);
                               return (
                                 <span key={pId} className="text-sm font-black px-4 py-2 bg-white border-2 border-slate-200 rounded-2xl text-slate-600 uppercase">
-                                  {capitalize(player?.name ?? pId)}
+                                  {t.capitalize(player?.name ?? pId)}
                                 </span>
                               );
                             })}
@@ -874,9 +1316,8 @@ export default function Tournament() {
                 })
               )}
             </div>
-            
             <footer className="p-6 bg-slate-50 border-t border-slate-100 text-center">
-              <button onClick={() => setShowHistoryModal(false)} className="px-10 py-3 bg-slate-900 text-white rounded-full font-black uppercase tracking-widest text-sm">Close Log</button>
+              <button onClick={() => t.setShowHistoryModal(false)} className="px-10 py-3 bg-slate-900 text-white rounded-full font-black uppercase tracking-widest text-sm">Close Log</button>
             </footer>
           </div>
         </div>

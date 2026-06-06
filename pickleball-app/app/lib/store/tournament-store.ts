@@ -1,0 +1,947 @@
+'use client';
+
+import { useState, useEffect, useRef, useCallback } from 'react';
+import type {
+  Player, Match, Round, GameMode, ModeConfig,
+  PreAssignment, RatingOrder, ScheduledMatch,
+} from '@/app/lib/definitions';
+import { saveTournamentState, getTournamentState, clearTournament } from '@/app/lib/actions';
+import { firePodiumConfetti } from '@/app/ui/confetti';
+import { generateRallyPairings } from '@/app/lib/engines/rally/pairing';
+import { calculateRallyLeaderboard } from '@/app/lib/engines/rally/leaderboard';
+import { hasPlayedTogetherRecently } from '@/app/lib/engines/rally/partner-score';
+import {
+  generateRoundRobinPairings,
+  isTournamentComplete,
+  calculateRoundRobinStandings,
+  generateFullSchedule,
+} from '@/app/lib/engines/round-robin';
+import {
+  generateBracket,
+  advanceWinners,
+  isKnockoutComplete,
+  getKnockoutLeaderboard,
+} from '@/app/lib/engines/single-elimination';
+import { generateSwissPairings, calculateSwissStandings } from '@/app/lib/engines/swiss';
+import type { KnockoutState } from '@/app/lib/engines/single-elimination';
+import type { KOLeaderboardEntry } from '@/app/lib/engines/single-elimination/standings';
+import { autoFillByRating, shuffleTeams as shuffleTeamsFn, shufflePlayers as shufflePlayersFn } from '@/app/lib/engines/setup/auto-fill';
+
+export interface TournamentStore {
+  // State
+  isHydrated: boolean;
+  setupComplete: boolean;
+  tournamentFinished: boolean;
+  isEditMode: boolean;
+  showHistoryModal: boolean;
+  swapSelection: SwapSelection | null;
+  availableCourts: string[];
+  selectedCourts: string[];
+  courtOrder: string[];
+  players: Player[];
+  waitingPlayers: string[];
+  currentMatches: Record<string, Match>;
+  history: Round[];
+  bulkInput: string;
+  benchMessage: string | null;
+  bottomBonusMessage: string | null;
+  modeConfig: ModeConfig;
+  knockoutState: KnockoutState;
+  activeCourts: string[]; // knockout: subset of courts in use this round
+  champions: Player[];    // knockout: winners when tournament finishes
+  matchQueue: ScheduledMatch[];       // async RR: pre-generated matches not yet assigned
+  queueSelectCourtId: string | null;  // async RR: court waiting for manual match selection
+
+  // Derived
+  kingCourt: string;
+  bottomCourt: string;
+  secondBottomCourt: string | null;
+  isRoundOne: boolean;
+
+  // Setup assignment state
+  preAssignment: PreAssignment | null;
+  setupSwapSelection: SwapSelection | null;
+  ratingOrder: RatingOrder;
+
+  // Actions
+  setSelectedCourts: (fn: (prev: string[]) => string[]) => void;
+  setCourtOrder: (fn: (prev: string[]) => string[]) => void;
+  moveCourt: (index: number, direction: 'up' | 'down') => void;
+  setPlayers: (p: Player[]) => void;
+  setBulkInput: (v: string) => void;
+  setModeConfig: (c: ModeConfig) => void;
+  setIsEditMode: (v: boolean) => void;
+  setSwapSelection: (s: SwapSelection | null) => void;
+  setSetupSwapSelection: (s: SwapSelection | null) => void;
+  setCurrentMatches: (m: Record<string, Match>) => void;
+  setShowHistoryModal: (v: boolean) => void;
+  autoFill: () => void;
+  shuffleTeams: () => void;
+  shufflePlayers: () => void;
+  toggleRatingOrder: () => void;
+  handleSetupSwap: (target: SwapSelection) => void;
+  setTournamentFinished: (v: boolean) => void;
+  startTournament: () => void;
+  nextRound: () => void;
+  /** Async RR: confirm a single court's result and load the next queued match. */
+  confirmCourtResult: (courtId: string) => void;
+  /** Async RR: manually assign a queued match to a court that just finished. */
+  selectQueueMatch: (courtId: string, matchId: string) => void;
+  setQueueSelectCourtId: (id: string | null) => void;
+  /** Swiss / Swiss-KO: 0-indexed current swiss round number. */
+  swissCurrentRound: number;
+  /** Swiss / Swiss-KO: commit the current round to history and generate the next round's pairings. */
+  nextSwissRound: () => void;
+  /** Swiss-KO: which phase is active — 'swiss' or 'knockout'. */
+  swissKoPhase: 'swiss' | 'knockout';
+  /** Swiss-KO KO phase: court selected for match-swap (courtId or null). */
+  koCourtSwapSelection: string | null;
+  /** Swiss-KO KO phase: click a court to select/swap matches between courts. */
+  selectKoCourtForSwap: (courtId: string) => void;
+  undoRound: () => void;
+  finishTournament: () => void;
+  resetTournament: () => Promise<void>;
+  handleSwap: (target: SwapSelection) => void;
+  getLeaderboard: () => import('@/app/lib/definitions').LeaderboardEntry[];
+  getKOLeaderboard: () => KOLeaderboardEntry[];
+  hasPlayedTogether: (p1: string, p2: string) => boolean;
+  capitalize: (s: string) => string;
+  isTournamentDone: () => boolean;
+  totalScheduledMatches: number;
+  completedMatchCount: number;
+}
+
+export interface SwapSelection {
+  courtId?: string;
+  team?: 'A' | 'B';
+  index?: number;
+  isWaitlist?: boolean;
+  pId?: string;
+}
+
+const DEFAULT_MODE_CONFIG: ModeConfig = { mode: 'rally' };
+const DEFAULT_KNOCKOUT: KnockoutState = { eliminatedPlayerIds: [], knockoutRound: 0 };
+
+export function useTournament(): TournamentStore {
+  const [isHydrated, setIsHydrated] = useState(false);
+  const [setupComplete, setSetupComplete] = useState(false);
+  const [tournamentFinished, setTournamentFinished] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [swapSelection, setSwapSelection] = useState<SwapSelection | null>(null);
+
+  const availableCourts = ['1', '2', '3', '4', '5', '6', '7'];
+  const [selectedCourts, setSelectedCourts] = useState<string[]>(['4', '5', '6', '7']);
+  const [courtOrder, setCourtOrder] = useState<string[]>(['1', '2', '3']);
+
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [waitingPlayers, setWaitingPlayers] = useState<string[]>([]);
+  const [currentMatches, setCurrentMatches] = useState<Record<string, Match>>({});
+  const [history, setHistory] = useState<Round[]>([]);
+  const [bulkInput, setBulkInput] = useState('');
+  const [benchMessage, setBenchMessage] = useState<string | null>(null);
+  const [bottomBonusMessage, setBottomBonusMessage] = useState<string | null>(null);
+  const [modeConfig, setModeConfig] = useState<ModeConfig>(DEFAULT_MODE_CONFIG);
+  const [knockoutState, setKnockoutState] = useState<KnockoutState>(DEFAULT_KNOCKOUT);
+  const [activeCourts, setActiveCourts] = useState<string[]>([]);
+  const [champions, setChampions] = useState<Player[]>([]);
+
+  // Async RR state
+  const [matchQueue, setMatchQueue] = useState<ScheduledMatch[]>([]);
+  const [queueSelectCourtId, setQueueSelectCourtId] = useState<string | null>(null);
+  // Total matches generated at start (for progress display).
+  const [totalScheduledMatches, setTotalScheduledMatches] = useState(0);
+
+  // Swiss state
+  const [swissCurrentRound, setSwissCurrentRound] = useState(0);
+
+  // Swiss-KO state
+  const [swissKoPhase, setSwissKoPhase] = useState<'swiss' | 'knockout'>('swiss');
+  const [koCourtSwapSelection, setKoCourtSwapSelection] = useState<string | null>(null);
+
+  // Setup assignment state (not persisted)
+  const [preAssignment, setPreAssignment] = useState<PreAssignment | null>(null);
+  const [setupSwapSelection, setSetupSwapSelection] = useState<SwapSelection | null>(null);
+  const [ratingOrder, setRatingOrder] = useState<RatingOrder>('highToTop');
+
+  const newRoundPairingsRef = useRef(false);
+
+  // Derived
+  const kingCourt = courtOrder[0];
+  const bottomCourt = courtOrder[courtOrder.length - 1];
+  const secondBottomCourt = courtOrder.length >= 2 ? courtOrder[courtOrder.length - 2] : null;
+  const isRoundOne = history.length === 0;
+
+  const capitalize = (str: string) => str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+
+  // ── Sync / Hydrate ─────────────────────────────────────────────────────────
+
+  const syncData = useCallback(async (overrideState?: Record<string, unknown>) => {
+    const stateToSave = overrideState || {
+      setupComplete, tournamentFinished, selectedCourts, courtOrder,
+      players, waitingPlayers, currentMatches, history, bulkInput,
+      modeConfig, knockoutState, activeCourts, champions,
+      matchQueue, totalScheduledMatches, swissCurrentRound, swissKoPhase,
+    };
+    if (isHydrated && (stateToSave.setupComplete || overrideState)) {
+      const result = await saveTournamentState(stateToSave);
+      if (!result.success) console.error('Cloud sync failed');
+      return result;
+    }
+  }, [isHydrated, setupComplete, tournamentFinished, selectedCourts, courtOrder,
+      players, waitingPlayers, currentMatches, history, bulkInput,
+      modeConfig, knockoutState, activeCourts, champions, matchQueue, totalScheduledMatches,
+      swissCurrentRound, swissKoPhase]);
+
+  useEffect(() => {
+    const loadInitialData = async () => {
+      const data = await getTournamentState();
+      if (data) {
+        try {
+          setSetupComplete(data.setupComplete);
+          setTournamentFinished(data.tournamentFinished);
+          setSelectedCourts(data.selectedCourts);
+          setCourtOrder(data.courtOrder || data.selectedCourts);
+          setPlayers((data.players as Player[]).map(p => ({
+            ...p,
+            benchCount: p.benchCount ?? 0,
+            lastBenchedRound: p.lastBenchedRound ?? null,
+          })));
+          setWaitingPlayers(data.waitingPlayers);
+          setCurrentMatches(data.currentMatches);
+          setHistory(data.history);
+          setBulkInput(data.bulkInput);
+          if (data.modeConfig) setModeConfig(data.modeConfig as ModeConfig);
+          if (data.knockoutState) setKnockoutState(data.knockoutState as KnockoutState);
+          if (data.activeCourts) setActiveCourts(data.activeCourts as string[]);
+          if (data.champions) setChampions(data.champions as Player[]);
+          if (data.matchQueue) setMatchQueue(data.matchQueue as ScheduledMatch[]);
+          if (data.totalScheduledMatches) setTotalScheduledMatches(data.totalScheduledMatches as number);
+          if (data.swissCurrentRound !== undefined) setSwissCurrentRound(data.swissCurrentRound as number);
+          if (data.swissKoPhase) setSwissKoPhase(data.swissKoPhase as 'swiss' | 'knockout');
+        } catch (e) {
+          console.error('Error parsing database state:', e);
+        }
+      }
+      setIsHydrated(true);
+    };
+    loadInitialData();
+  }, []);
+
+  useEffect(() => {
+    const id = setTimeout(() => syncData(), 500);
+    return () => clearTimeout(id);
+  }, [syncData]);
+
+  useEffect(() => {
+    setCourtOrder(prev => {
+      const newBase = selectedCourts.filter(c => prev.includes(c));
+      const added = selectedCourts.filter(c => !prev.includes(c));
+      return [...newBase, ...added];
+    });
+  }, [selectedCourts]);
+
+  // ── Auto-fill pre-assignment when roster composition or courts change ──────
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const playerIdsSignature = players.map(p => p.id).join(',');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const courtsSignature = [...selectedCourts].sort().join(',');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const modeSignature = `${modeConfig.mode}:${modeConfig.teamSize ?? 2}`;
+
+  useEffect(() => {
+    if (setupComplete) return;
+    const teamSize = modeConfig.teamSize ?? 2;
+    const ppc = teamSize * 2;
+
+    if (modeConfig.mode === 'knockout') {
+      const bracketCourts = Math.floor(players.length / ppc);
+      const teams = players.length / ppc;
+      const isPow2 = teams > 0 && Number.isInteger(teams) && (teams & (teams - 1)) === 0;
+      if (!isPow2 || bracketCourts === 0 || bracketCourts > selectedCourts.length) {
+        setPreAssignment(null);
+      } else {
+        const orderedCourts = courtOrder.filter(c => selectedCourts.includes(c)).slice(0, bracketCourts);
+        setPreAssignment(autoFillByRating(players, orderedCourts, ratingOrder, teamSize));
+      }
+    } else {
+      const needed = selectedCourts.length * ppc;
+      if (players.length >= needed && selectedCourts.length > 0) {
+        setPreAssignment(autoFillByRating(players, selectedCourts, ratingOrder, teamSize));
+      } else {
+        setPreAssignment(null);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerIdsSignature, courtsSignature, setupComplete, modeSignature]);
+
+  // ── Bottom bonus banner (rally only) ──────────────────────────────────────
+
+  useEffect(() => {
+    if (!newRoundPairingsRef.current) return;
+    newRoundPairingsRef.current = false;
+    if (modeConfig.mode !== 'rally') return;
+    if (bottomCourt === kingCourt) return;
+    const km = currentMatches[kingCourt];
+    if (!km) return;
+
+    const onBottom = new Set<string>();
+    const alreadyBonused = new Set<string>();
+    history.forEach((round, index) => {
+      const bm = round.matches[bottomCourt];
+      if (bm) [...bm.teamA, ...bm.teamB].forEach(id => onBottom.add(id));
+      if (index >= 1) {
+        const hkm = round.matches[kingCourt];
+        if (hkm) [...hkm.teamA, ...hkm.teamB].forEach(pId => {
+          if (onBottom.has(pId)) alreadyBonused.add(pId);
+        });
+      }
+    });
+
+    const earners = [...km.teamA, ...km.teamB]
+      .filter(pId => onBottom.has(pId) && !alreadyBonused.has(pId))
+      .map(pId => capitalize(players.find(p => p.id === pId)?.name || pId));
+
+    if (earners.length > 0) {
+      setBottomBonusMessage(`🏅 Bottom court bonus: ${earners.join(' & ')} +1 pt!`);
+      setTimeout(() => setBottomBonusMessage(null), 3000);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMatches]);
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  const hasPlayedTogether = (p1: string, p2: string) =>
+    hasPlayedTogetherRecently(p1, p2, history);
+
+  function moveCourt(index: number, direction: 'up' | 'down') {
+    setCourtOrder(prev => {
+      const next = [...prev];
+      const target = direction === 'up' ? index - 1 : index + 1;
+      if (target < 0 || target >= next.length) return prev;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }
+
+  // ── Leaderboard ────────────────────────────────────────────────────────────
+
+  function getLeaderboard() {
+    if (modeConfig.mode === 'rally') {
+      return calculateRallyLeaderboard({ players, history, currentMatches, kingCourt, bottomCourt });
+    }
+    if (modeConfig.mode === 'swiss' || (modeConfig.mode === 'swiss-ko' && swissKoPhase === 'swiss')) {
+      return calculateSwissStandings(players, history, modeConfig.recordMode === 'score');
+    }
+    return calculateRoundRobinStandings(players, history, modeConfig.recordMode === 'score');
+  }
+
+  function getKOLeaderboard(): KOLeaderboardEntry[] {
+    return getKnockoutLeaderboard(
+      players,
+      history,
+      knockoutState.eliminatedPlayerIds,
+      modeConfig.fixedPartners,
+    );
+  }
+
+  // ── Tournament complete check ──────────────────────────────────────────────
+
+  function isTournamentDone(): boolean {
+    if (modeConfig.mode === 'round-robin') {
+      // Async RR: done when queue is empty and all courts have results.
+      return matchQueue.length === 0 &&
+        Object.values(currentMatches).every(m => m.teamA.length === 0 || m.winner !== null);
+    }
+    if (modeConfig.mode === 'knockout') {
+      const courts = activeCourts.length > 0 ? activeCourts : courtOrder;
+      return isKnockoutComplete(currentMatches, courts, players, knockoutState, modeConfig.teamSize ?? 2);
+    }
+    if (modeConfig.mode === 'swiss') {
+      return tournamentFinished;
+    }
+    if (modeConfig.mode === 'swiss-ko') {
+      if (swissKoPhase === 'swiss') return false; // Swiss phase: Next Swiss Round button handles this
+      const courts = activeCourts.length > 0 ? activeCourts : selectedCourts;
+      return isKnockoutComplete(currentMatches, courts, players, knockoutState, modeConfig.teamSize ?? 2);
+    }
+    return false;
+  }
+
+  // ── Setup Assignment Actions ───────────────────────────────────────────────
+
+  function autoFill() {
+    const teamSize = modeConfig.teamSize ?? 2;
+    const ppc = teamSize * 2;
+    const courts = modeConfig.mode === 'knockout'
+      ? courtOrder.filter(c => selectedCourts.includes(c)).slice(0, Math.floor(players.length / ppc))
+      : selectedCourts;
+    setPreAssignment(autoFillByRating(players, courts, ratingOrder, teamSize));
+  }
+
+  function shuffleTeams() {
+    if (!preAssignment) return;
+    setPreAssignment(shuffleTeamsFn(preAssignment));
+  }
+
+  function shufflePlayers() {
+    const teamSize = modeConfig.teamSize ?? 2;
+    const ppc = teamSize * 2;
+    const courts = modeConfig.mode === 'knockout'
+      ? courtOrder.filter(c => selectedCourts.includes(c)).slice(0, Math.floor(players.length / ppc))
+      : selectedCourts;
+    setPreAssignment(shufflePlayersFn(players, courts, teamSize));
+  }
+
+  function toggleRatingOrder() {
+    const teamSize = modeConfig.teamSize ?? 2;
+    const newOrder: RatingOrder = ratingOrder === 'highToTop' ? 'lowToTop' : 'highToTop';
+    setRatingOrder(newOrder);
+    setPreAssignment(autoFillByRating(players, selectedCourts, newOrder, teamSize));
+  }
+
+  function handleSetupSwap(target: SwapSelection) {
+    if (!setupSwapSelection || !preAssignment) return;
+    const newCourts = JSON.parse(JSON.stringify(preAssignment.courts)) as Record<string, Match>;
+    const newBench = [...preAssignment.bench];
+
+    const p1 = setupSwapSelection.isWaitlist
+      ? setupSwapSelection.pId!
+      : newCourts[setupSwapSelection.courtId!][setupSwapSelection.team === 'A' ? 'teamA' : 'teamB'][setupSwapSelection.index!];
+
+    const p2 = target.isWaitlist
+      ? target.pId!
+      : newCourts[target.courtId!][target.team === 'A' ? 'teamA' : 'teamB'][target.index!];
+
+    if (setupSwapSelection.isWaitlist) newBench[newBench.indexOf(p1)] = p2;
+    else newCourts[setupSwapSelection.courtId!][setupSwapSelection.team === 'A' ? 'teamA' : 'teamB'][setupSwapSelection.index!] = p2;
+
+    if (target.isWaitlist) newBench[newBench.indexOf(p2)] = p1;
+    else newCourts[target.courtId!][target.team === 'A' ? 'teamA' : 'teamB'][target.index!] = p1;
+
+    setPreAssignment({ courts: newCourts, bench: newBench });
+    setSetupSwapSelection(null);
+  }
+
+  // ── Start Tournament ───────────────────────────────────────────────────────
+
+  function startTournament() {
+    const pre = preAssignment;
+    const teamSize = modeConfig.teamSize ?? 2;
+
+    function buildFixedPartners(p: PreAssignment): Record<string, string> {
+      const fp: Record<string, string> = {};
+      Object.values(p.courts).forEach(m => {
+        if (m.teamA.length > 1) { fp[m.teamA[0]] = m.teamA[1]; fp[m.teamA[1]] = m.teamA[0]; }
+        if (m.teamB.length > 1) { fp[m.teamB[0]] = m.teamB[1]; fp[m.teamB[1]] = m.teamB[0]; }
+      });
+      return fp;
+    }
+
+    if (modeConfig.mode === 'knockout') {
+      if (pre) {
+        setCurrentMatches(pre.courts);
+        setActiveCourts(Object.keys(pre.courts));
+        setKnockoutState(DEFAULT_KNOCKOUT);
+        if (teamSize === 2) {
+          setModeConfig({ ...modeConfig, fixedPartners: buildFixedPartners(pre) });
+        }
+      } else {
+        const { newMatches, activeCourts: ac } = generateBracket(players, courtOrder, undefined, teamSize);
+        setCurrentMatches(newMatches);
+        setActiveCourts(ac);
+        setKnockoutState(DEFAULT_KNOCKOUT);
+      }
+    } else if (modeConfig.mode === 'round-robin') {
+      // ── Async RR: pre-generate full schedule ──────────────────────────────
+      const legs = modeConfig.legs ?? 1;
+      let fixedPartners: Record<string, string> | undefined;
+      let teams: string[][];
+
+      if (pre && teamSize === 2) {
+        fixedPartners = buildFixedPartners(pre);
+        // Build canonical team list from fixed partners.
+        const seen = new Set<string>();
+        teams = [];
+        for (const [a, b] of Object.entries(fixedPartners)) {
+          const key = [a, b].sort().join('|');
+          if (!seen.has(key)) { seen.add(key); teams.push([a, b]); }
+        }
+      } else {
+        // Singles: each player is their own team.
+        teams = players.map(p => [p.id]);
+      }
+
+      let allMatches = generateFullSchedule(teams, legs);
+      // Apply per-team match cap if set
+      const maxMatchesPerTeam = modeConfig.maxMatchesPerTeam;
+      if (maxMatchesPerTeam) {
+        const counts = new Map<string, number>();
+        const getKey = (team: string[]) => team.slice().sort().join('|');
+        allMatches = allMatches.filter(m => {
+          const kA = getKey(m.teamA), kB = getKey(m.teamB);
+          if ((counts.get(kA) ?? 0) >= maxMatchesPerTeam) return false;
+          if ((counts.get(kB) ?? 0) >= maxMatchesPerTeam) return false;
+          counts.set(kA, (counts.get(kA) ?? 0) + 1);
+          counts.set(kB, (counts.get(kB) ?? 0) + 1);
+          return true;
+        });
+      }
+      const courts = selectedCourts;
+      const initialMatches: Record<string, Match> = {};
+
+      // Assign first N matches to courts.
+      courts.forEach((cId, i) => {
+        const sm = allMatches[i];
+        if (sm) initialMatches[cId] = { teamA: sm.teamA, teamB: sm.teamB, winner: null };
+        else initialMatches[cId] = { teamA: [], teamB: [], winner: null }; // idle placeholder
+      });
+
+      const remaining = allMatches.slice(courts.length);
+      const updatedConfig = fixedPartners
+        ? { ...modeConfig, fixedPartners }
+        : modeConfig;
+
+      setCurrentMatches(initialMatches);
+      setMatchQueue(remaining);
+      setTotalScheduledMatches(allMatches.length);
+      setWaitingPlayers([]);
+      setModeConfig(updatedConfig);
+    } else if (modeConfig.mode === 'swiss') {
+      // ── Swiss: derive teams and generate Round 1 pairings ────────────────
+      let swissTeams: string[][];
+      let swissFixedPartners: Record<string, string> | undefined;
+
+      if (pre && teamSize === 2) {
+        swissFixedPartners = buildFixedPartners(pre);
+        const seen = new Set<string>();
+        swissTeams = [];
+        for (const [a, b] of Object.entries(swissFixedPartners)) {
+          const key = [a, b].sort().join('|');
+          if (!seen.has(key)) { seen.add(key); swissTeams.push([a, b]); }
+        }
+      } else {
+        swissTeams = players.map(p => [p.id]);
+      }
+
+      const swissMatches = generateSwissPairings({
+        teams: swissTeams, courts: selectedCourts,
+        history: [], swissRound: 0, players,
+      });
+      setCurrentMatches(swissMatches);
+      setSwissCurrentRound(0);
+      setWaitingPlayers([]);
+      if (swissFixedPartners) setModeConfig({ ...modeConfig, fixedPartners: swissFixedPartners });
+    } else if (modeConfig.mode === 'swiss-ko') {
+      // ── Swiss-KO: start with Swiss Round 1 (same as Swiss mode) ─────────
+      let swissTeams: string[][];
+      let swissFixedPartners: Record<string, string> | undefined;
+
+      if (pre && teamSize === 2) {
+        swissFixedPartners = buildFixedPartners(pre);
+        const seen = new Set<string>();
+        swissTeams = [];
+        for (const [a, b] of Object.entries(swissFixedPartners)) {
+          const key = [a, b].sort().join('|');
+          if (!seen.has(key)) { seen.add(key); swissTeams.push([a, b]); }
+        }
+      } else {
+        swissTeams = players.map(p => [p.id]);
+      }
+
+      const swissMatches = generateSwissPairings({
+        teams: swissTeams, courts: selectedCourts,
+        history: [], swissRound: 0, players,
+      });
+      setCurrentMatches(swissMatches);
+      setSwissCurrentRound(0);
+      setSwissKoPhase('swiss');
+      setWaitingPlayers([]);
+      if (swissFixedPartners) setModeConfig({ ...modeConfig, fixedPartners: swissFixedPartners });
+    } else {
+      // Rally mode
+      if (pre) {
+        setCurrentMatches(pre.courts);
+        setWaitingPlayers(pre.bench);
+      } else {
+        const result = generateRallyPairings({
+          isFirst: true, roster: players, courts: selectedCourts,
+          history: [], currentMatches: {}, waitingPlayers: [], teamSize,
+        });
+        setCurrentMatches(result.newMatches);
+        setWaitingPlayers(result.newWaiting);
+      }
+    }
+    setSetupComplete(true);
+  }
+
+  // ── Swiss: advance to the next round ──────────────────────────────────────
+
+  function nextSwissRound() {
+    const teamSize = modeConfig.teamSize ?? 2;
+
+    // Derive teams from fixedPartners (doubles) or players (singles)
+    let swissTeams: string[][];
+    if (modeConfig.fixedPartners && teamSize === 2) {
+      const seen = new Set<string>();
+      swissTeams = [];
+      for (const [a, b] of Object.entries(modeConfig.fixedPartners)) {
+        const key = [a, b].sort().join('|');
+        if (!seen.has(key)) { seen.add(key); swissTeams.push([a, b]); }
+      }
+    } else {
+      swissTeams = players.map(p => [p.id]);
+    }
+
+    // Commit the current round to history
+    const round: Round = {
+      id: history.length,
+      matches: { ...currentMatches },
+      waiting: [],
+    };
+    const newHistory = [...history, round];
+    setHistory(newHistory);
+
+    const nextRoundNum = swissCurrentRound + 1;
+    const totalRounds = modeConfig.swissRounds ?? 4;
+    const isSwissKo = modeConfig.mode === 'swiss-ko';
+
+    if (nextRoundNum >= totalRounds) {
+      if (isSwissKo) {
+        // ── Transition to Knockout phase ──────────────────────────────────
+        const advancing = modeConfig.swissKoAdvancing ?? 4;
+        const swissStandings = calculateSwissStandings(players, newHistory, modeConfig.recordMode === 'score');
+
+        // Collect advancing players in Swiss standing order (for bracket seeding)
+        let advancingPlayers: Player[];
+        if (modeConfig.fixedPartners && teamSize === 2) {
+          const seen = new Set<string>();
+          const advancingTeams: Player[][] = [];
+          for (const entry of swissStandings) {
+            if (advancingTeams.length >= advancing) break;
+            const partnerId = modeConfig.fixedPartners[entry.id];
+            if (!partnerId) continue;
+            const key = [entry.id, partnerId].sort().join('|');
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const p1 = players.find(p => p.id === entry.id);
+            const p2 = players.find(p => p.id === partnerId);
+            if (p1 && p2) advancingTeams.push([p1, p2]);
+          }
+          // Flatten in seed order: seed1-player1, seed1-player2, seed2-player1, ...
+          advancingPlayers = advancingTeams.flat();
+        } else {
+          advancingPlayers = swissStandings.slice(0, advancing)
+            .map(e => players.find(p => p.id === e.id))
+            .filter(Boolean) as Player[];
+        }
+
+        const { newMatches: koMatches, activeCourts: koCourts } = generateBracket(
+          advancingPlayers, selectedCourts, modeConfig.fixedPartners, teamSize, true,
+        );
+        setCurrentMatches(koMatches);
+        setActiveCourts(koCourts);
+        setKnockoutState(DEFAULT_KNOCKOUT);
+        setSwissKoPhase('knockout');
+        setKoCourtSwapSelection(null);
+      } else {
+        setTournamentFinished(true);
+        firePodiumConfetti();
+      }
+    } else {
+      const nextMatches = generateSwissPairings({
+        teams: swissTeams,
+        courts: selectedCourts,
+        history: newHistory,
+        swissRound: nextRoundNum,
+        players,
+      });
+      setCurrentMatches(nextMatches);
+      setSwissCurrentRound(nextRoundNum);
+    }
+  }
+
+  // ── Swiss-KO: swap matches between two courts (KO phase only) ─────────────
+
+  function selectKoCourtForSwap(courtId: string) {
+    if (!koCourtSwapSelection) {
+      setKoCourtSwapSelection(courtId);
+      return;
+    }
+    if (koCourtSwapSelection === courtId) {
+      setKoCourtSwapSelection(null);
+      return;
+    }
+    // Only swap if both courts have no winner yet
+    const a = currentMatches[koCourtSwapSelection];
+    const b = currentMatches[courtId];
+    if (a && b && a.winner === null && b.winner === null) {
+      setCurrentMatches({ ...currentMatches, [koCourtSwapSelection]: b, [courtId]: a });
+    }
+    setKoCourtSwapSelection(null);
+  }
+
+  // ── Async RR: confirm a court result and load the next queued match ────────
+
+  function confirmCourtResult(courtId: string) {
+    const m = currentMatches[courtId];
+    if (!m || !m.winner) return;
+
+    // Save this match to history as a single-match round.
+    const snapshot: Round = {
+      id: history.length,
+      matches: { [courtId]: { ...m } },
+      waiting: [],
+    };
+
+    // Build live-teams set from all courts except the one being confirmed.
+    const liveTeams = new Set<string>();
+    Object.entries(currentMatches).forEach(([cId, cm]) => {
+      if (cId === courtId || !cm || cm.teamA.length === 0 || cm.winner !== null) return;
+      cm.teamA.forEach(id => liveTeams.add(id));
+      cm.teamB.forEach(id => liveTeams.add(id));
+    });
+
+    const newMatches = { ...currentMatches };
+    const queue = [...matchQueue];
+
+    function popNextMatch(): Match {
+      const idx = queue.findIndex(sm =>
+        !sm.teamA.some(id => liveTeams.has(id)) &&
+        !sm.teamB.some(id => liveTeams.has(id)),
+      );
+      if (idx < 0) return { teamA: [], teamB: [], winner: null };
+      const sm = queue.splice(idx, 1)[0];
+      sm.teamA.forEach(id => liveTeams.add(id));
+      sm.teamB.forEach(id => liveTeams.add(id));
+      return { teamA: sm.teamA, teamB: sm.teamB, winner: null };
+    }
+
+    // Assign next match to the confirming court first.
+    newMatches[courtId] = popNextMatch();
+
+    // Then fill any other idle courts (teamA.length === 0).
+    Object.keys(newMatches).forEach(cId => {
+      if (cId === courtId) return;
+      const cm = newMatches[cId];
+      if (!cm || cm.teamA.length > 0) return;
+      newMatches[cId] = popNextMatch();
+    });
+
+    setHistory(prev => [...prev, snapshot]);
+    setCurrentMatches(newMatches);
+    setMatchQueue([...queue]);
+    setQueueSelectCourtId(null);
+
+    // Check completion.
+    const allDone = queue.length === 0 &&
+      Object.values(newMatches).every(cm => cm.teamA.length === 0 || cm.winner !== null);
+    if (allDone) {
+      setTournamentFinished(true);
+      firePodiumConfetti();
+    }
+  }
+
+  // ── Async RR: manually assign a specific queued match to an idle court ─────
+
+  function selectQueueMatch(courtId: string, matchId: string) {
+    const idx = matchQueue.findIndex(m => m.id === matchId);
+    if (idx < 0) return;
+    const sm = matchQueue[idx];
+    const newQueue = [...matchQueue];
+    newQueue.splice(idx, 1);
+
+    // If the court currently has an auto-assigned idle placeholder, just replace.
+    // If it has a valid (pending but non-confirmed) match, put it back at front.
+    const existing = currentMatches[courtId];
+    if (existing && existing.teamA.length > 0 && !existing.winner) {
+      // Court not yet confirmed — can't override a live match.
+      return;
+    }
+
+    setCurrentMatches({ ...currentMatches, [courtId]: { teamA: sm.teamA, teamB: sm.teamB, winner: null } });
+    setMatchQueue(newQueue);
+    setQueueSelectCourtId(null);
+  }
+
+  // ── Next Round (Rally + Knockout only) ────────────────────────────────────
+
+  function nextRound() {
+    const snapshot: Round = {
+      id: history.length,
+      matches: { ...currentMatches },
+      waiting: [...waitingPlayers],
+      players: [...players],
+      eliminatedPlayerIds: [...knockoutState.eliminatedPlayerIds],
+    };
+
+    if (modeConfig.mode === 'rally') {
+      setHistory(prev => [...prev, snapshot]);
+      const result = generateRallyPairings({
+        isFirst: false, roster: players, courts: courtOrder,
+        history: [...history, snapshot], currentMatches, waitingPlayers,
+        teamSize: modeConfig.teamSize ?? 2,
+      });
+      setCurrentMatches(result.newMatches);
+      setWaitingPlayers(result.newWaiting);
+      setPlayers(result.updatedPlayers);
+      if (result.benchMessage) {
+        setBenchMessage(result.benchMessage);
+        setTimeout(() => setBenchMessage(null), 5000);
+      }
+      newRoundPairingsRef.current = true;
+    } else if (modeConfig.mode === 'knockout' || (modeConfig.mode === 'swiss-ko' && swissKoPhase === 'knockout')) {
+      const courts = activeCourts.length > 0 ? activeCourts : courtOrder;
+      const result = advanceWinners(
+        currentMatches, courts, players, knockoutState, courtOrder,
+        modeConfig.fixedPartners,
+        modeConfig.teamSize ?? 2,
+      );
+      setHistory(prev => [...prev, snapshot]);
+      setKnockoutState(result.nextState);
+      setKoCourtSwapSelection(null);
+      if (result.isFinished) {
+        setChampions(result.champions);
+        setTournamentFinished(true);
+        firePodiumConfetti();
+      } else {
+        setCurrentMatches(result.newMatches);
+        setActiveCourts(result.activeCourts);
+      }
+      return;
+    }
+
+    if (isTournamentDone()) {
+      setTournamentFinished(true);
+      firePodiumConfetti();
+    }
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // ── Undo ───────────────────────────────────────────────────────────────────
+
+  function undoRound() {
+    if (history.length === 0) return;
+    const prev = [...history];
+    const last = prev.pop()!;
+
+    if (modeConfig.mode === 'round-robin') {
+      // Async RR undo: restore that court's match and return it to front of queue.
+      const courtId = Object.keys(last.matches)[0];
+      const restoredMatch = last.matches[courtId];
+      if (restoredMatch) {
+        // Put the currently-assigned match on that court back in the queue.
+        const existing = currentMatches[courtId];
+        const newQueue = [...matchQueue];
+        if (existing && existing.teamA.length > 0) {
+          newQueue.unshift({ id: `m-undo-${Date.now()}`, teamA: existing.teamA, teamB: existing.teamB });
+        }
+        setCurrentMatches({ ...currentMatches, [courtId]: { ...restoredMatch, winner: null, scoreA: undefined, scoreB: undefined } });
+        setMatchQueue(newQueue);
+      }
+    } else {
+      setCurrentMatches(last.matches);
+      setWaitingPlayers(last.waiting);
+      if (last.players) setPlayers(last.players);
+      if (last.eliminatedPlayerIds !== undefined) {
+        setKnockoutState(s => ({ ...s, eliminatedPlayerIds: last.eliminatedPlayerIds! }));
+      }
+    }
+
+    setHistory(prev);
+    setBenchMessage(null);
+    setBottomBonusMessage(null);
+  }
+
+  // ── Finish / Reset ─────────────────────────────────────────────────────────
+
+  function finishTournament() {
+    setTournamentFinished(true);
+    firePodiumConfetti();
+  }
+
+  async function resetTournament() {
+    await clearTournament();
+    localStorage.removeItem('kotc_session');
+    location.reload();
+  }
+
+  // ── Swap ───────────────────────────────────────────────────────────────────
+
+  function handleSwap(target: SwapSelection) {
+    if (!isEditMode || !swapSelection) return;
+    const isBenchBottomSwap =
+      (swapSelection.isWaitlist && (target.courtId === bottomCourt || target.courtId === secondBottomCourt)) ||
+      ((swapSelection.courtId === bottomCourt || swapSelection.courtId === secondBottomCourt) && target.isWaitlist);
+    if (!isRoundOne && !isBenchBottomSwap && (swapSelection.courtId !== target.courtId || swapSelection.isWaitlist || target.isWaitlist)) {
+      alert('From Round 2, players can only be swapped within the same court.');
+      setSwapSelection(null);
+      return;
+    }
+    const newMatchesState = JSON.parse(JSON.stringify(currentMatches)) as Record<string, Match>;
+    const newWaiting = [...waitingPlayers];
+    const p1 = swapSelection.isWaitlist
+      ? swapSelection.pId!
+      : newMatchesState[swapSelection.courtId!][swapSelection.team === 'A' ? 'teamA' : 'teamB'][swapSelection.index!];
+    const p2 = target.isWaitlist
+      ? target.pId!
+      : newMatchesState[target.courtId!][target.team === 'A' ? 'teamA' : 'teamB'][target.index!];
+    if (swapSelection.isWaitlist) newWaiting[newWaiting.indexOf(p1)] = p2;
+    else newMatchesState[swapSelection.courtId!][swapSelection.team === 'A' ? 'teamA' : 'teamB'][swapSelection.index!] = p2;
+    if (target.isWaitlist) newWaiting[newWaiting.indexOf(p2)] = p1;
+    else newMatchesState[target.courtId!][target.team === 'A' ? 'teamA' : 'teamB'][target.index!] = p1;
+    setCurrentMatches(newMatchesState);
+    setWaitingPlayers(newWaiting);
+    setSwapSelection(null);
+  }
+
+  // Completed match count = all confirmed matches in history (for async RR).
+  const completedMatchCount = modeConfig.mode === 'round-robin'
+    ? history.length
+    : 0;
+
+  return {
+    isHydrated, setupComplete, tournamentFinished, isEditMode, showHistoryModal,
+    swapSelection, availableCourts, selectedCourts, courtOrder, players,
+    waitingPlayers, currentMatches, history, bulkInput, benchMessage,
+    bottomBonusMessage, modeConfig, knockoutState, activeCourts, champions,
+    matchQueue, queueSelectCourtId, totalScheduledMatches, completedMatchCount,
+    swissCurrentRound, swissKoPhase, koCourtSwapSelection,
+    kingCourt, bottomCourt, secondBottomCourt, isRoundOne,
+    preAssignment, setupSwapSelection, ratingOrder,
+    setSelectedCourts: fn => setSelectedCourts(fn),
+    setCourtOrder: fn => setCourtOrder(fn),
+    moveCourt,
+    setPlayers,
+    setBulkInput,
+    setModeConfig,
+    setIsEditMode,
+    setSwapSelection,
+    setSetupSwapSelection,
+    setCurrentMatches,
+    setShowHistoryModal,
+    autoFill,
+    shuffleTeams,
+    shufflePlayers,
+    toggleRatingOrder,
+    handleSetupSwap,
+    setTournamentFinished,
+    startTournament,
+    nextRound,
+    nextSwissRound,
+    selectKoCourtForSwap,
+    confirmCourtResult,
+    selectQueueMatch,
+    setQueueSelectCourtId,
+    undoRound,
+    finishTournament,
+    resetTournament,
+    handleSwap,
+    getLeaderboard,
+    getKOLeaderboard,
+    hasPlayedTogether,
+    capitalize,
+    isTournamentDone,
+  };
+}

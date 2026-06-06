@@ -5,6 +5,7 @@ export interface BenchRotationInput {
   waitingCount: number;
   players: Player[];
   currentRound: number;
+  teamSize?: 1 | 2; // default 2
 }
 
 export interface BenchRotationResult {
@@ -40,7 +41,7 @@ export function sortByBenchPriority(ids: string[], players: Player[]): string[] 
 //
 // TODO: handle mid-tournament player removal (out of scope for MVP)
 export function selectPlayersForBench(input: BenchRotationInput): BenchRotationResult {
-  const { bottomCourtMatch, waitingCount, players, currentRound } = input;
+  const { bottomCourtMatch, waitingCount, players, currentRound, teamSize = 2 } = input;
 
   if (waitingCount === 0 || !bottomCourtMatch.winner) {
     return { toBenchIds: [], message: '' };
@@ -57,31 +58,24 @@ export function selectPlayersForBench(input: BenchRotationInput): BenchRotationR
   const sortedWinners = sortByBenchPriority(winners, players);
   const playerName = (id: string) => players.find(p => p.id === id)?.name ?? id;
 
-  if (waitingCount === 1) {
-    const bench = sortedLosers[0];
-    return {
-      toBenchIds: [bench],
-      message: `Auto-bench: ${playerName(bench)} (bottom court loser, lowest bench count)`,
-    };
+  // Max players we can pull from the bottom court = full losing team + full winning team
+  const maxHandled = teamSize * 2;
+  if (waitingCount > maxHandled) {
+    return { toBenchIds: [], message: `${waitingCount} bench slots — add more courts to reduce extras` };
   }
 
-  if (waitingCount === 2) {
-    return {
-      toBenchIds: losers,
-      message: `Auto-bench: ${losers.map(playerName).join(', ')} (bottom court losing team)`,
-    };
-  }
+  const benchFromLosers = Math.min(waitingCount, teamSize);
+  const benchFromWinners = Math.min(waitingCount - benchFromLosers, teamSize);
 
-  if (waitingCount === 3) {
-    const extraBench = sortedWinners[0];
-    return {
-      toBenchIds: [...losers, extraBench],
-      message: `Auto-bench: ${[...losers, extraBench].map(playerName).join(', ')} (losing team + 1 winner with lowest bench count)`,
-    };
-  }
+  const toBenchIds = [
+    ...sortedLosers.slice(0, benchFromLosers),
+    ...sortedWinners.slice(0, benchFromWinners),
+  ];
 
-  // 4+ extras: not handled
-  return { toBenchIds: [], message: `${waitingCount} bench slots — add more courts to reduce extras` };
+  return {
+    toBenchIds,
+    message: `Auto-bench: ${toBenchIds.map(playerName).join(', ')}`,
+  };
 }
 
 // Apply updated bench counts to the player list.
