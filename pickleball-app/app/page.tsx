@@ -516,7 +516,7 @@ export default function KotcApp() {
       {/* --- HISTORY LOG MODAL --- */}
       {showHistoryModal && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-[100] p-4 lg:p-10" onClick={() => setShowHistoryModal(false)}>
-          <div className="bg-white rounded-[40px] w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className="bg-white rounded-[40px] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
             <header className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50">
               <div>
                 <h2 className="text-4xl font-black italic uppercase tracking-tighter text-slate-900">Match Log</h2>
@@ -570,6 +570,21 @@ export default function KotcApp() {
                           );
                         })}
                       </div>
+                      {round.waiting.length > 0 && (
+                        <div className="rounded-3xl bg-slate-50 border border-slate-100 p-5">
+                          <div className="text-[10px] font-black text-slate-400 uppercase mb-3">On Bench</div>
+                          <div className="flex flex-wrap gap-2">
+                            {round.waiting.map(pId => {
+                              const player = players.find(p => p.id === pId);
+                              return (
+                                <span key={pId} className="text-sm font-bold px-4 py-2 bg-white border border-slate-200 rounded-xl text-slate-600 uppercase">
+                                  {capitalize(player?.name ?? pId)}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })

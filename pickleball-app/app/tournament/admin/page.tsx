@@ -589,7 +589,7 @@ export default function Tournament() {
                             const isBenchSelected = swapSelection?.isWaitlist === true;
                             const isDimmed = !isRoundOne && !!swapSelection && swapSelection.courtId !== cId && !isBenchSelected;
                             const isBottomOrSecondBottom = cId === bottomCourt || cId === secondBottomCourt;
-                            const isSwapTarget = isEditMode && isBenchSelected && isBottomOrSecondBottom;
+                            const isCourtGreyed = isEditMode && isBenchSelected && !isBottomOrSecondBottom;
                             return (
                               <span
                                 key={idx}
@@ -604,8 +604,7 @@ export default function Tournament() {
                                 className={`w-full text-center text-[20px] py-4 rounded-xl font-bold truncate transition-all
                                   ${isEditMode ? 'bg-orange-100 text-orange-800 cursor-pointer' : ''}
                                   ${isSelected ? '!bg-orange-600 !text-white shadow-md' : ''}
-                                  ${isSwapTarget ? 'ring-2 ring-indigo-400 !bg-indigo-50 !text-indigo-800' : ''}
-                                  ${isDimmed ? 'opacity-20 grayscale' : ''}`}
+                                  ${isDimmed || isCourtGreyed ? 'opacity-20 grayscale' : ''}`}
                               >
                                 {capitalize(pId)}
                               </span>
@@ -678,8 +677,9 @@ export default function Tournament() {
                   const player = players.find(p => p.id === pId);
                   if (!player) return null;
                   const isSelected = swapSelection?.isWaitlist === true && swapSelection.pId === pId;
-                  // Highlight bench card when a bottom court player is selected
-                  const isHighlighted = isEditMode && (swapSelection?.courtId === bottomCourt || swapSelection?.courtId === secondBottomCourt) && !swapSelection?.isWaitlist;
+                  const isGreyed = isEditMode && !!swapSelection && !swapSelection?.isWaitlist
+                    && !(swapSelection?.courtId === bottomCourt || swapSelection?.courtId === secondBottomCourt)
+                    && !isSelected;
                   const badge = (player.benchCount ?? 0) === 0 ? 'bg-green-100 text-green-700'
                     : (player.benchCount ?? 0) <= 2 ? 'bg-yellow-100 text-yellow-700'
                     : 'bg-orange-100 text-orange-700';
@@ -703,13 +703,12 @@ export default function Tournament() {
                         ${isEditMode ? 'cursor-pointer' : ''}
                         ${isSelected
                           ? 'bg-orange-600 border-orange-600 shadow-md'
-                          : isHighlighted
-                          ? 'bg-indigo-50 border-indigo-500 ring-2 ring-indigo-300'
                           : isEditMode
                           ? 'bg-orange-100 border-orange-200'
-                          : 'bg-white border-slate-200'}`}
+                          : 'bg-white border-slate-200'}
+                        ${isGreyed ? 'opacity-20 grayscale' : ''}`}
                     >
-                      <span className={`font-black text-sm uppercase ${isSelected ? 'text-white' : isHighlighted ? 'text-indigo-700' : isEditMode ? 'text-orange-800' : 'text-slate-800'}`}>
+                      <span className={`font-black text-sm uppercase ${isSelected ? 'text-white' : isEditMode ? 'text-orange-800' : 'text-slate-800'}`}>
                         {capitalize(player.name)}
                       </span>
                       <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${isSelected ? 'bg-white/20 text-white' : badge}`}>
@@ -740,7 +739,7 @@ export default function Tournament() {
       {/* --- HISTORY LOG MODAL --- */}
       {showHistoryModal && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-[100] p-4 lg:p-10" onClick={() => setShowHistoryModal(false)}>
-          <div className="bg-white rounded-[40px] w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className="bg-white rounded-[40px] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
             <header className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50">
               <div>
                 <h2 className="text-4xl font-black italic uppercase tracking-tighter text-slate-900">Match Log</h2>
@@ -855,6 +854,21 @@ export default function Tournament() {
     );
   })}
 </div>
+                      {round.waiting.length > 0 && (
+                        <div className="rounded-[32px] bg-slate-50 border-2 border-slate-100 p-5">
+                          <div className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-3">On Bench</div>
+                          <div className="flex flex-wrap gap-2">
+                            {round.waiting.map(pId => {
+                              const player = players.find(p => p.id === pId);
+                              return (
+                                <span key={pId} className="text-sm font-black px-4 py-2 bg-white border-2 border-slate-200 rounded-2xl text-slate-600 uppercase">
+                                  {capitalize(player?.name ?? pId)}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })

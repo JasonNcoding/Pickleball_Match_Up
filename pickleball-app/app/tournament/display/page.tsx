@@ -311,7 +311,7 @@ export default function Tournament() {
                         <div 
                           key={teamKey} 
                           className={`flex flex-col gap-0 rounded-2xl border-2 border-slate-100 transition cursor-pointer ${
-                            m.winner === teamKey ? 'bg-indigo-50 border-indigo-500' : 'bg-slate-50 border-transparent hover:border-slate-200'
+                            m.winner === teamKey ? 'bg-indigo-50 border-indigo-500 shadow-inner' : 'bg-slate-50 border-transparent hover:border-slate-200'
                           }`}
                         >
                           {team.map((pId, idx) => {
