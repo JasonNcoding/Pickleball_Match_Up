@@ -1,11 +1,11 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import React, { useState, useMemo, useEffect } from 'react';
-import { Player,Match, Round } from '@/app/lib/definitions';
-import { saveTournamentState,getTournamentState,clearTournament } from '@/app/lib/actions';
+import React, { useState, useEffect, useRef } from 'react';
+import { Player, Match, Round } from '@/app/lib/definitions';
+import { saveTournamentState, getTournamentState, clearTournament } from '@/app/lib/actions';
 import { firePodiumConfetti } from '@/app/ui/confetti';
-
+import { selectPlayersForBench, applyBenchCounts } from '@/app/lib/bench-rotation';
 
 export default function Tournament() {
   const router = useRouter();
@@ -25,7 +25,12 @@ export default function Tournament() {
       const [currentMatches, setCurrentMatches] = useState<Record<string, Match>>({});
       const [history, setHistory] = useState<Round[]>([]);
       const [bulkInput, setBulkInput] = useState('');
-  
+      const [benchMessage, setBenchMessage] = useState<string | null>(null);
+      const [bottomBonusMessage, setBottomBonusMessage] = useState<string | null>(null);
+      // Set to true only inside generatePairings (non-first round) so the bonus
+      // banner useEffect fires on new pairings but NOT on undo or hydration.
+      const newRoundPairingsRef = useRef(false);
+
     const syncData = React.useCallback(async (overrideState?: any) => {
     const stateToSave = overrideState || {
       setupComplete,
@@ -60,7 +65,11 @@ export default function Tournament() {
           setTournamentFinished(data.tournamentFinished);
           setSelectedCourts(data.selectedCourts);
           setCourtOrder(data.courtOrder || data.selectedCourts);
-          setPlayers(data.players);
+          setPlayers((data.players as Player[]).map(p => ({
+            ...p,
+            benchCount: p.benchCount ?? 0,
+            lastBenchedRound: p.lastBenchedRound ?? null,
+          })));
           setWaitingPlayers(data.waitingPlayers);
           setCurrentMatches(data.currentMatches);
           setHistory(data.history);
@@ -101,6 +110,7 @@ export default function Tournament() {
 
   const kingCourt = courtOrder[0];
   const bottomCourt = courtOrder[courtOrder.length - 1];
+  const secondBottomCourt = courtOrder.length >= 2 ? courtOrder[courtOrder.length - 2] : null;
 
   const moveCourt = (index: number, direction: 'up' | 'down') => {
     const newOrder = [...courtOrder];
@@ -146,21 +156,58 @@ export default function Tournament() {
       playingIds = sortedIds.slice(0, needed);
       waitingIds = sortedIds.slice(needed);
     } else {
+      // --- Rally ranking: winners move up, losers move down ---
       const lastRound = currentMatches;
-      const lastWaiting = [...waitingPlayers];
       const rankedPool: string[][] = [];
       courtOrder.forEach((cId) => {
         const m = lastRound[cId];
-        rankedPool.push(m.winner === 'A' ? m.teamA : m.teamB);
-        rankedPool.push(m.winner === 'A' ? m.teamB : m.teamA);
+        rankedPool.push(m.winner === 'A' ? m.teamA : m.teamB); // winners
+        rankedPool.push(m.winner === 'A' ? m.teamB : m.teamA); // losers
       });
+      // newOrder covers all players except bottom court losers (14 for 4 courts)
       const newOrder: string[][] = [rankedPool[0]];
       for (let i = 1; i < courtOrder.length; i++) {
         newOrder.push(rankedPool[i * 2], rankedPool[(i - 1) * 2 + 1]);
       }
-      const totalPool = [...newOrder.flat(), ...lastWaiting, ...rankedPool[rankedPool.length - 1]];
+
+      // --- Bench rotation: decide who goes to bench ---
+      const bottomCourtId = courtOrder[courtOrder.length - 1];
+      const bottomMatch = lastRound[bottomCourtId];
+      const bottomLosers: string[] = bottomMatch.winner === 'A'
+        ? [...bottomMatch.teamB] : [...bottomMatch.teamA];
+      const roundNumber = history.length; // rounds completed so far
+
+      const { toBenchIds, message } = selectPlayersForBench({
+        bottomCourtMatch: bottomMatch,
+        waitingCount: waitingPlayers.length,
+        players: roster,
+        currentRound: roundNumber,
+      });
+
+      // Update bench counts for players going to bench
+      if (toBenchIds.length > 0) {
+        const updatedPlayers = applyBenchCounts(roster, toBenchIds, roundNumber);
+        setPlayers(updatedPlayers);
+        setBenchMessage(message);
+        setTimeout(() => setBenchMessage(null), 5000);
+      }
+
+      // Build pool in rally ranking order:
+      // 1. Remove any benched players from the ranked non-bottom groups (handles +3 winner bench)
+      const filteredNewOrder = newOrder.map(group => group.filter(id => !toBenchIds.includes(id)));
+      // 2. Bottom losers who are NOT benched continue playing (at bottom court)
+      const bottomContinuing = bottomLosers.filter(id => !toBenchIds.includes(id));
+      // 3. All current bench players come back in (lowest priority)
+      const comingIn = [...waitingPlayers];
+
+      const totalPool = [
+        ...filteredNewOrder.flat(),
+        ...bottomContinuing,
+        ...comingIn,
+      ];
+
       playingIds = totalPool.slice(0, needed);
-      waitingIds = totalPool.slice(needed);
+      waitingIds = toBenchIds.length > 0 ? [...toBenchIds] : totalPool.slice(needed);
     }
 
     const newMatches: Record<string, Match> = {};
@@ -177,13 +224,17 @@ export default function Tournament() {
       })).sort((a, b) => a.score - b.score);
       newMatches[cId] = { ...scored[0], winner: null };
     });
+    if (!isFirst) newRoundPairingsRef.current = true;
     setCurrentMatches(newMatches);
     setWaitingPlayers(waitingIds);
   };
 
   const handleSwap = (target: {courtId?: string, team?: 'A'|'B', index?: number, isWaitlist?: boolean, pId?: string}) => {
     if (!isEditMode || !swapSelection) return;
-    if (!isRoundOne && (swapSelection.courtId !== target.courtId || swapSelection.isWaitlist || target.isWaitlist)) {
+    const isBenchBottomSwap =
+      (swapSelection.isWaitlist && (target.courtId === bottomCourt || target.courtId === secondBottomCourt)) ||
+      ((swapSelection.courtId === bottomCourt || swapSelection.courtId === secondBottomCourt) && target.isWaitlist);
+    if (!isRoundOne && !isBenchBottomSwap && (swapSelection.courtId !== target.courtId || swapSelection.isWaitlist || target.isWaitlist)) {
       alert("From Round 2, players can only be swapped within the same court.");
       setSwapSelection(null);
       return;
@@ -205,25 +256,96 @@ export default function Tournament() {
   const getLeaderboard = () => {
     const wins: Record<string, number> = {};
     players.forEach(p => wins[p.id] = 0);
-    
+
+    // Bottom court bonus: +1 once per session the first time a player who has
+    // been on the bottom court is placed on king court (win OR loss).
+    const bonusEnabled = bottomCourt !== kingCourt;
+    const hasBeenOnBottom: Record<string, boolean> = {};
+    const hasReceivedBonus: Record<string, boolean> = {};
+
     history.forEach((round, index) => {
+      if (bonusEnabled) {
+        const bm = round.matches[bottomCourt];
+        if (bm) [...bm.teamA, ...bm.teamB].forEach(id => { hasBeenOnBottom[id] = true; });
+      }
+
       // index 0 = Round 1 (Ignore)
       // index 1 = Round 2, index 2 = Round 3, etc.
-      if (index >= 1) { 
+      if (index >= 1) {
         const km = round.matches[kingCourt];
-        if (km?.winner) {
-          const winners = km.winner === 'A' ? km.teamA : km.teamB;
-          winners.forEach(wId => {
-            wins[wId] = (wins[wId] || 0) + 1;
-          });
+        if (km) {
+          // Regular scoring: king court winners get +1
+          if (km.winner) {
+            const winners = km.winner === 'A' ? km.teamA : km.teamB;
+            winners.forEach(wId => { wins[wId] = (wins[wId] || 0) + 1; });
+          }
+          // Bottom court bonus: +1 for any player reaching king court (win OR loss)
+          if (bonusEnabled) {
+            [...km.teamA, ...km.teamB].forEach(pId => {
+              if (hasBeenOnBottom[pId] && !hasReceivedBonus[pId]) {
+                wins[pId] = (wins[pId] || 0) + 1;
+                hasReceivedBonus[pId] = true;
+              }
+            });
+          }
         }
       }
     });
-    return Object.entries(wins).map(([id, winCount]) => ({ 
-      name: players.find(p => p.id === id)?.name || id, 
-      winCount 
+    // Also check the live round: bonus fires the moment a player is placed on
+    // king court, not just after they win and Next Round is clicked.
+    // history.length >= 1 means this is at least Round 2 (a scoring round).
+    if (bonusEnabled && history.length >= 1) {
+      const km = currentMatches[kingCourt];
+      if (km) {
+        [...km.teamA, ...km.teamB].forEach(pId => {
+          if (hasBeenOnBottom[pId] && !hasReceivedBonus[pId]) {
+            wins[pId] = (wins[pId] || 0) + 1;
+            hasReceivedBonus[pId] = true;
+          }
+        });
+      }
+    }
+
+    return Object.entries(wins).map(([id, winCount]) => ({
+      name: players.find(p => p.id === id)?.name || id,
+      winCount
     })).sort((a, b) => b.winCount - a.winCount);
   };
+
+  // Fire the bonus banner the moment new round pairings are set (not on undo/hydration).
+  // newRoundPairingsRef is set to true only inside generatePairings for non-first rounds.
+  useEffect(() => {
+    if (!newRoundPairingsRef.current) return;
+    newRoundPairingsRef.current = false;
+
+    if (bottomCourt === kingCourt) return;
+    const km = currentMatches[kingCourt];
+    if (!km) return;
+
+    // Rebuild who was on bottom court and who already received the bonus from history
+    const onBottom: Set<string> = new Set();
+    const alreadyBonused: Set<string> = new Set();
+    history.forEach((round, index) => {
+      const bm = round.matches[bottomCourt];
+      if (bm) [...bm.teamA, ...bm.teamB].forEach(id => onBottom.add(id));
+      if (index >= 1) {
+        const hkm = round.matches[kingCourt];
+        if (hkm) [...hkm.teamA, ...hkm.teamB].forEach(pId => {
+          if (onBottom.has(pId)) alreadyBonused.add(pId);
+        });
+      }
+    });
+
+    const earners = [...km.teamA, ...km.teamB]
+      .filter(pId => onBottom.has(pId) && !alreadyBonused.has(pId))
+      .map(pId => capitalize(players.find(p => p.id === pId)?.name || pId));
+
+    if (earners.length > 0) {
+      setBottomBonusMessage(`🏅 Bottom court bonus: ${earners.join(' & ')} +1 pt!`);
+      setTimeout(() => setBottomBonusMessage(null), 3000);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMatches]);
 
   if (tournamentFinished) {
     const stats = getLeaderboard();
@@ -340,7 +462,7 @@ export default function Tournament() {
             const parts = line.split(':'); // Support "Name:Rating"
             const name = parts[0].trim();
             const rating = parseFloat(parts[1]) || 3.5;
-            return { id: name, name, rating };
+            return { id: name, name, rating, benchCount: 0, lastBenchedRound: null } as Player;
           });
           setPlayers(newPlayers);
         }}
@@ -460,14 +582,30 @@ export default function Tournament() {
                     const isRepeat = hasPlayedTogetherRecently(team[0], team[1]);
                     return (
                       <div key={teamKey} className="relative">
-                        <div onClick={() => !isEditMode && setCurrentMatches({...currentMatches, [cId]: {...m, winner: teamKey as 'A'|'B'}})}
+                        <div onClick={() => !isEditMode && setCurrentMatches({...currentMatches, [cId]: {...m, winner: m.winner === teamKey ? null : teamKey as 'A'|'B'}})}
                           className={`flex flex-col gap-2 p-4 rounded-2xl border-2 transition cursor-pointer ${m.winner === teamKey ? 'bg-indigo-50 border-indigo-500 shadow-inner' : 'bg-slate-50 border-transparent hover:border-slate-200'}`}>
                           {team.map((pId, idx) => {
-                            const active = swapSelection?.courtId === cId && swapSelection.team === teamKey && swapSelection.index === idx;
-                            const disabled = !isRoundOne && swapSelection && swapSelection.courtId !== cId;
+                            const isSelected = swapSelection?.courtId === cId && swapSelection.team === teamKey && swapSelection.index === idx;
+                            const isBenchSelected = swapSelection?.isWaitlist === true;
+                            const isDimmed = !isRoundOne && !!swapSelection && swapSelection.courtId !== cId && !isBenchSelected;
+                            const isBottomOrSecondBottom = cId === bottomCourt || cId === secondBottomCourt;
+                            const isCourtGreyed = isEditMode && isBenchSelected && !isBottomOrSecondBottom;
                             return (
-                              <span key={idx} onClick={(e) => {if(isEditMode && !disabled){ e.stopPropagation(); if(!swapSelection) setSwapSelection({courtId: cId, team: teamKey as 'A'|'B', index: idx}); else handleSwap({courtId: cId, team: teamKey as 'A'|'B', index: idx}); }}}
-                                className={`w-full text-center text-[20px] py-4 rounded-xl font-bold truncate transition-all  ${isEditMode ? 'bg-orange-100 text-orange-800' : ''} ${active ? 'bg-orange-600 text-white shadow-md' : ''} ${disabled ? 'opacity-20 grayscale' : ''}`}>
+                              <span
+                                key={idx}
+                                onClick={(e) => {
+                                  if (isEditMode && !isDimmed) {
+                                    e.stopPropagation();
+                                    if (isSelected) { setSwapSelection(null); return; }
+                                    if (!swapSelection) setSwapSelection({ courtId: cId, team: teamKey as 'A'|'B', index: idx });
+                                    else handleSwap({ courtId: cId, team: teamKey as 'A'|'B', index: idx });
+                                  }
+                                }}
+                                className={`w-full text-center text-[20px] py-4 rounded-xl font-bold truncate transition-all
+                                  ${isEditMode ? 'bg-orange-100 text-orange-800 cursor-pointer' : ''}
+                                  ${isSelected ? '!bg-orange-600 !text-white shadow-md' : ''}
+                                  ${isDimmed || isCourtGreyed ? 'opacity-20 grayscale' : ''}`}
+                              >
                                 {capitalize(pId)}
                               </span>
                             );
@@ -489,12 +627,100 @@ export default function Tournament() {
         <aside className="space-y-6">
           <div className="md:col-span-2 flex gap-4 mt-6">
             <button disabled={!Object.values(currentMatches).every(m => m.winner) || isEditMode}
-              onClick={() => { setHistory([...history, { id: history.length, matches: {...currentMatches}, waiting: [...waitingPlayers] }]); generatePairings(false, players, selectedCourts); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+              onClick={() => {
+                // Save players snapshot BEFORE bench count update so undo can revert
+                setHistory([...history, { id: history.length, matches: {...currentMatches}, waiting: [...waitingPlayers], players: [...players] }]);
+                generatePairings(false, players, selectedCourts);
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
               className="flex-[2] py-6 bg-indigo-600 text-white font-black text-xl rounded-3xl shadow-xl disabled:bg-slate-200 uppercase transition">Next Round →</button>
           </div>
           <div className="md:col-span-2 flex gap-4 mt-6">
-            <button onClick={() => {if(history.length > 0){ const ph = [...history]; const last = ph.pop(); if(last){ setCurrentMatches(last.matches); setWaitingPlayers(last.waiting); setHistory(ph); }}}} disabled={history.length === 0} className="flex-1 py-6 bg-slate-400 text-white font-black text-xl rounded-3xl disabled:opacity-10 transition duration-300 opacity-50 hover:opacity-100">UNDO</button>
+            <button onClick={() => {
+              if (history.length > 0) {
+                const ph = [...history];
+                const last = ph.pop();
+                if (last) {
+                  setCurrentMatches(last.matches);
+                  setWaitingPlayers(last.waiting);
+                  if (last.players) setPlayers(last.players); // revert bench counts
+                  setHistory(ph);
+                  setBenchMessage(null);
+                  setBottomBonusMessage(null);
+                }
+              }
+            }} disabled={history.length === 0} className="flex-1 py-6 bg-slate-400 text-white font-black text-xl rounded-3xl disabled:opacity-10 transition duration-300 opacity-50 hover:opacity-100">UNDO</button>
             </div>
+          {bottomBonusMessage && (
+            <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl text-sm font-bold text-amber-800 leading-tight">
+              {bottomBonusMessage}
+            </div>
+          )}
+          {/* --- BENCH SECTION --- */}
+          {waitingPlayers.length > 0 && (
+            <div className="bg-slate-50 rounded-[32px] p-5 border-2 border-slate-200">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest">
+                  Bench ({waitingPlayers.length})
+                </h3>
+                <span className="text-[9px] font-bold text-slate-400 uppercase">tap to swap • bottom 2 courts</span>
+              </div>
+
+              {benchMessage && (
+                <div className="mb-3 p-2 bg-blue-50 border border-blue-200 rounded-xl text-[10px] font-bold text-blue-700 leading-tight">
+                  {benchMessage}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {waitingPlayers.map(pId => {
+                  const player = players.find(p => p.id === pId);
+                  if (!player) return null;
+                  const isSelected = swapSelection?.isWaitlist === true && swapSelection.pId === pId;
+                  const isGreyed = isEditMode && !!swapSelection && !swapSelection?.isWaitlist
+                    && !(swapSelection?.courtId === bottomCourt || swapSelection?.courtId === secondBottomCourt)
+                    && !isSelected;
+                  const badge = (player.benchCount ?? 0) === 0 ? 'bg-green-100 text-green-700'
+                    : (player.benchCount ?? 0) <= 2 ? 'bg-yellow-100 text-yellow-700'
+                    : 'bg-orange-100 text-orange-700';
+                  return (
+                    <div
+                      key={pId}
+                      onClick={() => {
+                        if (!isEditMode) return;
+                        if (isSelected) { setSwapSelection(null); return; }
+                        if (!swapSelection) {
+                          setSwapSelection({ isWaitlist: true, pId });
+                        } else if ((swapSelection.courtId === bottomCourt || swapSelection.courtId === secondBottomCourt) && !swapSelection.isWaitlist) {
+                          handleSwap({ isWaitlist: true, pId });
+                        } else if (swapSelection.isWaitlist) {
+                          setSwapSelection({ isWaitlist: true, pId });
+                        } else {
+                          setSwapSelection(null);
+                        }
+                      }}
+                      className={`flex items-center justify-between p-3 rounded-xl border-2 select-none transition-all
+                        ${isEditMode ? 'cursor-pointer' : ''}
+                        ${isSelected
+                          ? 'bg-orange-600 border-orange-600 shadow-md'
+                          : isEditMode
+                          ? 'bg-orange-100 border-orange-200'
+                          : 'bg-white border-slate-200'}
+                        ${isGreyed ? 'opacity-20 grayscale' : ''}`}
+                    >
+                      <span className={`font-black text-sm uppercase ${isSelected ? 'text-white' : isEditMode ? 'text-orange-800' : 'text-slate-800'}`}>
+                        {capitalize(player.name)}
+                      </span>
+                      <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${isSelected ? 'bg-white/20 text-white' : badge}`}>
+                        benched {player.benchCount ?? 0}×
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="bg-slate-900 text-white p-8 rounded-[40px] shadow-2xl">
             <h2 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-center">Leaderboard</h2>
             <div className="space-y-4">
@@ -506,14 +732,14 @@ export default function Tournament() {
               ))}
             </div>
           </div>
-          
+
         </aside>
       </div>
 
       {/* --- HISTORY LOG MODAL --- */}
       {showHistoryModal && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-[100] p-4 lg:p-10" onClick={() => setShowHistoryModal(false)}>
-          <div className="bg-white rounded-[40px] w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className="bg-white rounded-[40px] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
             <header className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50">
               <div>
                 <h2 className="text-4xl font-black italic uppercase tracking-tighter text-slate-900">Match Log</h2>
@@ -628,6 +854,21 @@ export default function Tournament() {
     );
   })}
 </div>
+                      {round.waiting.length > 0 && (
+                        <div className="rounded-[32px] bg-slate-50 border-2 border-slate-100 p-5">
+                          <div className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-3">On Bench</div>
+                          <div className="flex flex-wrap gap-2">
+                            {round.waiting.map(pId => {
+                              const player = players.find(p => p.id === pId);
+                              return (
+                                <span key={pId} className="text-sm font-black px-4 py-2 bg-white border-2 border-slate-200 rounded-2xl text-slate-600 uppercase">
+                                  {capitalize(player?.name ?? pId)}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })

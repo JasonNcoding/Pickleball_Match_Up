@@ -9,6 +9,8 @@ export interface Player {
   id: string;
   name: string;
   rating: number;
+  benchCount: number;
+  lastBenchedRound: number | null;
 }
 
 export interface Match {
@@ -21,4 +23,5 @@ export interface Round {
   id: number;
   matches: Record<string, Match>;
   waiting: string[];
+  players?: Player[]; // bench counts snapshot — used by undo to revert bench counts
 }
