@@ -59,6 +59,38 @@ function pairGreedy(sorted: string[][], history: Round[]): [string[], string[]][
 }
 
 /**
+ * Generate Swiss-format pairings for one round and return them as an ordered list.
+ * Round 0: fold by rating. Round 1+: sort by wins DESC / rating DESC, greedy rematch-avoidance.
+ */
+export function generateSwissPairingsList(
+  input: Omit<SwissPairingInput, 'courts'>,
+): { teamA: string[]; teamB: string[] }[] {
+  const { teams, history, swissRound, players } = input;
+  let sorted: string[][];
+  if (swissRound === 0) {
+    sorted = [...teams].sort((a, b) => getAvgRating(b, players) - getAvgRating(a, players));
+    const half = Math.floor(sorted.length / 2);
+    const top = sorted.slice(0, half);
+    const bottom = sorted.slice(half);
+    const interleaved: string[][] = [];
+    for (let i = 0; i < half; i++) {
+      interleaved.push(top[i]);
+      if (bottom[i]) interleaved.push(bottom[i]);
+    }
+    if (sorted.length % 2 !== 0) interleaved.push(sorted[sorted.length - 1]);
+    sorted = interleaved;
+  } else {
+    sorted = [...teams].sort((a, b) => {
+      const wDiff = getTeamWins(getKey(b), history) - getTeamWins(getKey(a), history);
+      if (wDiff !== 0) return wDiff;
+      return getAvgRating(b, players) - getAvgRating(a, players);
+    });
+  }
+  const pairs = pairGreedy(sorted, history);
+  return pairs.map(([teamA, teamB]) => ({ teamA, teamB }));
+}
+
+/**
  * Generate Swiss-format pairings for one round.
  * Round 0: fold by rating (rank 1 vs N/2+1, 2 vs N/2+2, …).
  * Round 1+: sort by wins DESC then rating DESC, pair greedily avoiding rematches.

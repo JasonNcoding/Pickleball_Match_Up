@@ -1,4 +1,4 @@
-export { generateSwissPairings } from './pairing';
+export { generateSwissPairings, generateSwissPairingsList } from './pairing';
 export type { SwissPairingInput } from './pairing';
 // Swiss standings use the same tiebreaker logic as Round Robin (USA Pickleball rules).
 export { calculateRoundRobinStandings as calculateSwissStandings } from '@/app/lib/engines/round-robin/standings';

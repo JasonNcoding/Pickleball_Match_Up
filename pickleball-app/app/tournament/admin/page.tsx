@@ -360,17 +360,15 @@ export default function Tournament() {
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">
                 Advance to KO
               </label>
-              <input
-                type="number"
-                min={2}
+              <select
                 value={t.modeConfig.swissKoAdvancing ?? 4}
-                onChange={e => {
-                  const v = Math.max(2, parseInt(e.target.value) || 4);
-                  t.setModeConfig({ ...t.modeConfig, swissKoAdvancing: v });
-                }}
-                className="w-20 px-3 py-2 bg-white border-2 border-slate-200 rounded-xl text-sm font-black text-indigo-600 outline-none focus:border-indigo-600 text-center"
-              />
-              <span className="text-[10px] text-slate-400 font-bold">teams (power of 2)</span>
+                onChange={e => t.setModeConfig({ ...t.modeConfig, swissKoAdvancing: parseInt(e.target.value) })}
+                className="px-3 py-2 bg-white border-2 border-slate-200 rounded-xl text-sm font-black text-indigo-600 outline-none focus:border-indigo-600"
+              >
+                {[2, 4, 8, 16].map(n => (
+                  <option key={n} value={n}>{n} teams</option>
+                ))}
+              </select>
             </div>
           )}
 
@@ -405,6 +403,33 @@ export default function Tournament() {
               />
             </div>
           )}
+
+          {/* Groups config (all modes) */}
+          <div className="mt-4 flex flex-wrap items-center gap-4">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">
+              Groups
+            </label>
+            <select
+              value={t.modeConfig.groupCount ?? 1}
+              onChange={e => t.setModeConfig({ ...t.modeConfig, groupCount: parseInt(e.target.value) === 1 ? undefined : parseInt(e.target.value) })}
+              className="px-3 py-2 bg-white border-2 border-slate-200 rounded-xl text-sm font-black text-indigo-600 outline-none focus:border-indigo-600"
+            >
+              {[1, 2, 3, 4].map(n => <option key={n} value={n}>{n === 1 ? 'None' : `${n} groups`}</option>)}
+            </select>
+            {(t.modeConfig.groupCount ?? 1) >= 2 && (
+              <>
+                <span className="text-slate-200 font-bold">|</span>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">Advance / group</label>
+                <input
+                  type="number" min={1}
+                  value={t.modeConfig.advancingPerGroup ?? 1}
+                  onChange={e => t.setModeConfig({ ...t.modeConfig, advancingPerGroup: Math.max(1, parseInt(e.target.value) || 1) })}
+                  className="w-16 px-3 py-2 bg-white border-2 border-slate-200 rounded-xl text-sm font-black text-indigo-600 outline-none focus:border-indigo-600 text-center"
+                />
+                <span className="text-[10px] text-slate-400 font-bold">→ KO final</span>
+              </>
+            )}
+          </div>
         </section>
 
         {/* 3-column layout */}
@@ -730,6 +755,8 @@ export default function Tournament() {
   const isSwissKoSwissPhase = isSwissKo && t.swissKoPhase === 'swiss';
   const isSwissKoKoPhase = isSwissKo && t.swissKoPhase === 'knockout';
   const recordMode = t.modeConfig.recordMode ?? 'win-loss';
+  const isGroupMode = (t.modeConfig.groupCount ?? 1) >= 2;
+  const groupLetter = String.fromCharCode(65 + t.currentGroupIndex); // A, B, C...
 
   // RR/Swiss/Swiss-KO(Swiss) use selectedCourts; KO and Swiss-KO(KO) use activeCourts; Rally uses courtOrder.
   const displayCourts = (isKnockout || isSwissKoKoPhase) && t.activeCourts.length > 0
@@ -738,27 +765,16 @@ export default function Tournament() {
       ? t.selectedCourts
       : t.courtOrder;
 
-  // Swiss / Swiss-KO(Swiss): "Next Round" button enabled when all active courts have a result.
-  const swissAllResultsIn = (isSwiss || isSwissKoSwissPhase) && t.selectedCourts.every(c => {
-    const m = t.currentMatches[c];
-    return !m || m.teamA.length === 0 || m.winner !== null;
-  });
-
   const roundLabel = () => {
+    const groupPrefix = isGroupMode ? `Group ${groupLetter} · ` : '';
     if (isRoundRobin) {
       const total = t.totalScheduledMatches;
       const done = t.completedMatchCount;
-      return total > 0 ? `${done} / ${total} Matches` : 'Round Robin';
+      return groupPrefix + (total > 0 ? `${done} / ${total} Matches` : 'Round Robin');
     }
-    if (isSwiss) {
-      const total = t.modeConfig.swissRounds ?? 4;
-      return `Swiss · Round ${t.swissCurrentRound + 1} / ${total}`;
-    }
+    if (isSwiss) return `${groupPrefix}Swiss System`;
     if (isSwissKo) {
-      if (isSwissKoSwissPhase) {
-        const total = t.modeConfig.swissRounds ?? 4;
-        return `Swiss → KO · Swiss Round ${t.swissCurrentRound + 1} / ${total}`;
-      }
+      if (isSwissKoSwissPhase) return `${groupPrefix}Swiss → KO · Swiss Phase`;
       const teamCount = t.activeCourts.length * 2;
       if (teamCount <= 2) return 'Swiss → KO · Final';
       if (teamCount === 4) return 'Swiss → KO · Semifinals';
@@ -766,13 +782,20 @@ export default function Tournament() {
       return `Swiss → KO · Round of ${teamCount}`;
     }
     if (isKnockout) {
+      if (isGroupMode && !t.groupStageComplete) {
+        // Group KO sub-bracket
+        const teamCount = t.activeCourts.length * 2;
+        if (teamCount <= 2) return `${groupPrefix}Final`;
+        if (teamCount === 4) return `${groupPrefix}Semifinals`;
+        return `${groupPrefix}Round of ${teamCount}`;
+      }
       const teamCount = t.activeCourts.length * 2;
-      if (teamCount <= 2) return 'Final';
-      if (teamCount === 4) return 'Semifinals';
-      if (teamCount === 8) return 'Quarterfinals';
-      return `Round of ${teamCount}`;
+      if (teamCount <= 2) return isGroupMode ? 'Group Stage KO · Final' : 'Final';
+      if (teamCount === 4) return isGroupMode ? 'Group Stage KO · Semifinals' : 'Semifinals';
+      if (teamCount === 8) return isGroupMode ? 'Group Stage KO · Quarterfinals' : 'Quarterfinals';
+      return isGroupMode ? `Group Stage KO · Round of ${teamCount}` : `Round of ${teamCount}`;
     }
-    return `Round ${t.history.length + 1}`;
+    return `${groupPrefix}Round ${t.history.length + 1}`;
   };
 
   // allResultsIn gates the Next Round button (Rally + KO + Swiss-KO KO phase only).
@@ -790,6 +813,116 @@ export default function Tournament() {
     m.teamB.forEach(id => liveTeamIds.add(id));
   });
 
+  // ── Swiss-KO: confirmation screen before KO starts ────────────────────────
+  if (isSwissKo && t.swissKoTransitionPending) {
+    const standings = t.getLeaderboard();
+    const advancing = t.modeConfig.swissKoAdvancing ?? 4;
+    const teamSize = t.modeConfig.teamSize ?? 2;
+    const advancingPlayerCount = advancing * teamSize;
+    return (
+      <div className="mx-auto p-4 lg:p-10">
+        <header className="flex flex-wrap justify-between items-center gap-4 mb-10">
+          <div>
+            <h1 className="text-4xl font-black italic uppercase tracking-tighter">Swiss Phase Complete</h1>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+              Top {advancing} team{advancing > 1 ? 's' : ''} advance to Knockout
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={t.undoRound} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-slate-200 transition">UNDO</button>
+            <button onClick={() => { if (confirm('R U Sure, Reset?')) t.resetTournament(); }} className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition rounded-xl font-black text-xs border border-red-100">RESET</button>
+          </div>
+        </header>
+        <div className="max-w-md mx-auto space-y-6">
+          <div className="bg-slate-900 text-white rounded-[32px] p-8">
+            <h2 className="text-lg font-black uppercase tracking-widest mb-1 text-center">Final Swiss Standings</h2>
+            <p className="text-slate-400 text-[11px] font-bold uppercase tracking-wide text-center mb-5">
+              Top {advancing} advance · {t.modeConfig.swissRounds ?? 4} rounds completed
+            </p>
+            <div className="space-y-2">
+              {standings.slice(0, Math.max(standings.length, advancingPlayerCount)).map((e, i) => (
+                <div key={e.id} className={`flex justify-between py-2 border-b ${i < advancingPlayerCount ? 'border-indigo-700' : 'border-slate-800'}`}>
+                  <span className={`font-bold text-sm ${i < advancingPlayerCount ? 'text-white' : 'text-slate-500'}`}>
+                    {i + 1}. {t.capitalize(e.name)}
+                    {i < advancingPlayerCount && <span className="ml-2 text-emerald-400 text-[10px] font-black">✓ ADV</span>}
+                  </span>
+                  <span className={`font-bold text-sm ${i < advancingPlayerCount ? 'text-amber-400' : 'text-slate-600'}`}>{e.winCount}W</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <button
+            onClick={t.startKnockout}
+            className="w-full py-6 bg-indigo-600 text-white font-black text-xl rounded-3xl shadow-xl hover:bg-indigo-700 uppercase tracking-widest transition"
+          >
+            Begin Knockout →
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Group stage: between-group and pre-KO transition screens ─────────────
+  if (isGroupMode && (t.tournamentFinished || t.groupStageComplete)) {
+    const groupCount = t.modeConfig.groupCount ?? 1;
+    const isLastGroup = t.currentGroupIndex + 1 >= groupCount || t.groupStageComplete;
+    const advancing = t.modeConfig.advancingPerGroup ?? 1;
+    const groupPlayerIds = t.groupAssignments[t.currentGroupIndex] ?? [];
+    const standings = t.getLeaderboard().filter(e => groupPlayerIds.includes(e.id));
+    return (
+      <div className="mx-auto p-4 lg:p-10">
+        <header className="flex flex-wrap justify-between items-center gap-4 mb-10">
+          <div>
+            <h1 className="text-4xl font-black italic uppercase tracking-tighter">
+              Group {groupLetter} Complete
+            </h1>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+              Top {advancing} player{advancing > 1 ? 's' : ''} advance{isLastGroup ? ' to Knockout' : ` · Group ${String.fromCharCode(66 + t.currentGroupIndex)} up next`}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={t.undoRound} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-slate-200 transition">UNDO</button>
+            <button onClick={() => { if (confirm('R U Sure, Reset?')) t.resetTournament(); }} className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition rounded-xl font-black text-xs border border-red-100">RESET</button>
+          </div>
+        </header>
+        <div className="max-w-md mx-auto space-y-6">
+          <div className="bg-slate-900 text-white rounded-[32px] p-8">
+            <h2 className="text-lg font-black uppercase tracking-widest mb-1 text-center">Group {groupLetter} Standings</h2>
+            <p className="text-slate-400 text-[11px] font-bold uppercase tracking-wide text-center mb-5">
+              Top {advancing} advance
+            </p>
+            <div className="space-y-2">
+              {standings.map((e, i) => (
+                <div key={e.id} className={`flex justify-between py-2 border-b ${i < advancing ? 'border-indigo-700' : 'border-slate-800'}`}>
+                  <span className={`font-bold text-sm ${i < advancing ? 'text-white' : 'text-slate-500'}`}>
+                    {i + 1}. {t.capitalize(e.name)}
+                    {i < advancing && <span className="ml-2 text-emerald-400 text-[10px] font-black">✓ ADV</span>}
+                  </span>
+                  <span className={`font-bold text-sm ${i < advancing ? 'text-amber-400' : 'text-slate-600'}`}>{e.winCount}W</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {isLastGroup ? (
+            <button
+              onClick={t.startGroupKO}
+              className="w-full py-6 bg-indigo-600 text-white font-black text-xl rounded-3xl shadow-xl hover:bg-indigo-700 uppercase tracking-widest transition"
+            >
+              Start Knockout →
+            </button>
+          ) : (
+            <button
+              onClick={t.endGroup}
+              className="w-full py-6 bg-indigo-600 text-white font-black text-xl rounded-3xl shadow-xl hover:bg-indigo-700 uppercase tracking-widest transition"
+            >
+              Start Group {String.fromCharCode(66 + t.currentGroupIndex)} →
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto p-4 lg:p-10">
       <header className="flex flex-wrap justify-between items-center gap-4 mb-10">
@@ -802,13 +935,13 @@ export default function Tournament() {
           )}
           {isRoundRobin && (
             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
-              Round Robin • {t.modeConfig.legs ?? 1} leg{(t.modeConfig.legs ?? 1) > 1 ? 's' : ''}
+              {isGroupMode ? `Group ${groupLetter} · ` : ''}Round Robin • {t.modeConfig.legs ?? 1} leg{(t.modeConfig.legs ?? 1) > 1 ? 's' : ''}
               {recordMode === 'score' && ' • Score mode'}
             </p>
           )}
           {isSwiss && (
             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
-              Swiss System • {t.modeConfig.swissRounds ?? 4} rounds
+              {isGroupMode ? `Group ${groupLetter} · ` : ''}Swiss System • Round {t.swissCurrentRound + 1} / {t.modeConfig.swissRounds ?? 4}
               {recordMode === 'score' && ' • Score mode'}
             </p>
           )}
@@ -844,21 +977,6 @@ export default function Tournament() {
               {t.koCourtSwapSelection ? 'Cancel Swap' : 'Swap Courts'}
             </button>
           )}
-          {/* Swiss / Swiss-KO(Swiss): Next Round button */}
-          {(isSwiss || isSwissKoSwissPhase) && !t.tournamentFinished && (
-            <button
-              onClick={t.nextSwissRound}
-              disabled={!swissAllResultsIn}
-              className={`px-6 py-2 rounded-xl font-black text-sm uppercase transition
-                ${swissAllResultsIn
-                  ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md'
-                  : 'bg-slate-100 text-slate-300 cursor-not-allowed'}`}
-            >
-              {t.swissCurrentRound + 1 >= (t.modeConfig.swissRounds ?? 4)
-                ? (isSwissKo ? 'Start Knockout →' : 'Finish Swiss')
-                : 'Next Round →'}
-            </button>
-          )}
           <button onClick={t.finishTournament} className="px-6 py-2 bg-slate-100 rounded-xl font-bold text-slate-600 hover:bg-emerald-500 hover:text-white transition">FINISH</button>
           <button onClick={() => { if (confirm('R U Sure, Reset?')) t.resetTournament(); }} className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition rounded-xl font-black text-xs border border-red-100">RESET</button>
         </div>
@@ -866,7 +984,7 @@ export default function Tournament() {
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-10">
         {/* Courts */}
-        <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-4 content-start">
           {displayCourts.map((cId) => {
             const m = t.currentMatches[cId];
             if (!m) return null;
@@ -991,6 +1109,27 @@ export default function Tournament() {
                         className="mt-4 w-full py-3 bg-green-600 text-white font-black text-sm rounded-2xl uppercase tracking-wide hover:bg-green-700 transition shadow-sm"
                       >
                         Confirm & Next Match →
+                      </button>
+                    )}
+                    {/* Swiss async: confirm button when winner is set */}
+                    {(isSwiss || isSwissKoSwissPhase) && m.winner && (
+                      <button
+                        onClick={() => t.confirmCourtResult(cId)}
+                        className="mt-4 w-full py-3 bg-green-600 text-white font-black text-sm rounded-2xl uppercase tracking-wide hover:bg-green-700 transition shadow-sm"
+                      >
+                        {t.matchQueue.length > 0 ? 'Confirm & Next Match →' : 'Confirm Result ✓'}
+                      </button>
+                    )}
+                    {/* Swiss async: swap button for active (unfinished) court when queue has matches */}
+                    {(isSwiss || isSwissKoSwissPhase) && !m.winner && t.matchQueue.length > 0 && (
+                      <button
+                        onClick={() => t.setQueueSelectCourtId(t.queueSelectCourtId === cId ? null : cId)}
+                        className={`mt-3 w-full py-2 rounded-xl text-[11px] font-black uppercase transition
+                          ${t.queueSelectCourtId === cId
+                            ? 'bg-orange-500 text-white hover:bg-orange-600'
+                            : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                      >
+                        {t.queueSelectCourtId === cId ? 'Cancel' : 'Swap Match ⇄'}
                       </button>
                     )}
                   </div>
@@ -1138,6 +1277,84 @@ export default function Tournament() {
             </div>
           )}
 
+          {/* Swiss / Swiss-KO Swiss phase: Round Schedule (active courts + queued) */}
+          {(isSwiss || isSwissKoSwissPhase) && (
+            <div className="bg-slate-50 rounded-[32px] p-5 border-2 border-slate-200">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest">
+                  Round Schedule
+                </h3>
+                {t.queueSelectCourtId ? (
+                  <button
+                    onClick={() => t.setQueueSelectCourtId(null)}
+                    className="text-[9px] font-black text-orange-500 uppercase animate-pulse hover:text-orange-700"
+                  >
+                    Cancel ×
+                  </button>
+                ) : (
+                  <span className="text-[9px] font-bold text-slate-400 uppercase">tap to swap</span>
+                )}
+              </div>
+              <div className="space-y-1.5 max-h-72 overflow-y-auto scrollbar-hide">
+                {/* Active / finished court matches */}
+                {t.selectedCourts.map(cId => {
+                  const m = t.currentMatches[cId];
+                  if (!m || m.teamA.length === 0) return null;
+                  const isSelectedForSwap = t.queueSelectCourtId === cId;
+                  const isDone = !!m.winner;
+                  return (
+                    <div
+                      key={`court-${cId}`}
+                      onClick={() => { if (!isDone) t.setQueueSelectCourtId(isSelectedForSwap ? null : cId); }}
+                      className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs font-bold transition select-none
+                        ${isSelectedForSwap
+                          ? 'border-orange-400 bg-orange-50 text-orange-800 cursor-pointer ring-1 ring-orange-200'
+                          : isDone
+                            ? 'border-indigo-100 bg-indigo-50/50 text-slate-500 cursor-default'
+                            : 'border-slate-200 bg-white text-slate-700 cursor-pointer hover:border-indigo-200'}`}
+                    >
+                      <span className={`shrink-0 text-[9px] font-black px-1.5 py-0.5 rounded-md
+                        ${isDone ? 'bg-indigo-100 text-indigo-600' : 'bg-emerald-100 text-emerald-700'}`}>
+                        C{cId}
+                      </span>
+                      <span className="flex-1 truncate">{m.teamA.map(id => t.capitalize(id)).join(' & ')}</span>
+                      <span className="text-slate-300 text-[9px] shrink-0">vs</span>
+                      <span className="flex-1 truncate text-right">{m.teamB.map(id => t.capitalize(id)).join(' & ')}</span>
+                      {isDone && <span className="shrink-0 text-[9px] text-indigo-500">✓</span>}
+                      {isSelectedForSwap && <span className="shrink-0 text-[9px] text-orange-600 font-black">⇄</span>}
+                    </div>
+                  );
+                })}
+                {/* Queued matches */}
+                {t.matchQueue.map(sm => {
+                  const isConflict = sm.teamA.some(id => liveTeamIds.has(id)) || sm.teamB.some(id => liveTeamIds.has(id));
+                  const isSelectable = !!t.queueSelectCourtId && !isConflict;
+                  return (
+                    <div
+                      key={sm.id}
+                      onClick={() => isSelectable && t.selectQueueMatch(t.queueSelectCourtId!, sm.id)}
+                      className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs font-bold transition select-none
+                        ${isConflict
+                          ? 'opacity-40 border-slate-100 bg-white cursor-default'
+                          : isSelectable
+                            ? 'cursor-pointer border-orange-300 bg-orange-50 hover:bg-orange-100 text-orange-800'
+                            : 'border-slate-200 bg-white text-slate-500'}`}
+                    >
+                      <span className="shrink-0 text-[9px] font-black px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-400">Q</span>
+                      <span className="flex-1 truncate">{sm.teamA.map(id => t.capitalize(id)).join(' & ')}</span>
+                      <span className="text-slate-300 text-[9px] shrink-0">vs</span>
+                      <span className="flex-1 truncate text-right">{sm.teamB.map(id => t.capitalize(id)).join(' & ')}</span>
+                      {isConflict && <span className="text-[8px] text-slate-300 shrink-0">live</span>}
+                    </div>
+                  );
+                })}
+                {t.matchQueue.length === 0 && t.selectedCourts.every(cId => !(t.currentMatches[cId]?.teamA.length)) && (
+                  <p className="text-center text-[10px] text-slate-400 font-black uppercase py-3">No matches scheduled</p>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* KO / Swiss-KO KO phase: Bracket view + KO Leaderboard */}
           {(isKnockout || isSwissKoKoPhase) && (
             <>
@@ -1230,14 +1447,25 @@ export default function Tournament() {
               ) : (
                 [...t.history].reverse().map((round, rIdx) => {
                   const currentRoundNum = t.history.length - rIdx;
-                  const courtIds = (isRoundRobin || isSwiss || isSwissKo) ? Object.keys(round.matches) : t.courtOrder;
+                  const isSwissRound = round.swissRound !== undefined;
+                  const matchIds = (isRoundRobin || isSwiss || isSwissKo) ? Object.keys(round.matches) : t.courtOrder;
+                  // Round title
+                  const roundTitle = isRoundRobin
+                    ? `Match ${currentRoundNum}`
+                    : isSwiss
+                      ? `Swiss Round ${(round.swissRound ?? 0) + 1}`
+                      : isSwissKo
+                        ? isSwissRound
+                          ? `Swiss Round ${(round.swissRound ?? 0) + 1}`
+                          : 'Knockout'
+                        : `Round ${currentRoundNum}`;
                   return (
                     <div key={rIdx} className="space-y-6">
                       <div className="flex items-center gap-4">
                         <div className="h-px flex-1 bg-slate-100"></div>
                         <div className="flex flex-col items-center">
                           <h3 className="font-black text-indigo-600 uppercase tracking-tighter text-xl italic">
-                            {isRoundRobin ? `Match ${currentRoundNum}` : isSwiss ? `Swiss Round ${currentRoundNum}` : isSwissKo ? `Round ${currentRoundNum}` : `Round ${currentRoundNum}`}
+                            {roundTitle}
                           </h3>
                           {currentRoundNum === 1 && t.modeConfig.mode === 'rally' && (
                             <span className="text-[10px] font-black text-red-400 uppercase">Seeding Only</span>
@@ -1246,17 +1474,25 @@ export default function Tournament() {
                         <div className="h-px flex-1 bg-slate-100"></div>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                        {courtIds.map((cId) => {
+                        {matchIds.map((cId, matchIdx) => {
                           const m = round.matches[cId];
-                          if (!m) return null;
+                          if (!m || m.teamA.length === 0) return null;
                           const isKingCourt = cId === t.kingCourt && t.modeConfig.mode === 'rally';
                           const isBottomCourt = cId === t.bottomCourt && t.modeConfig.mode === 'rally';
                           const countsForPoints = isKingCourt && currentRoundNum > 1;
+                          // For Swiss rounds: all matches show "Match N"; for others show "Court N"
+                          const headerLabel = isSwissRound
+                            ? `Match ${matchIdx + 1}`
+                            : `Court ${cId}`;
+                          const isCourtKey = !cId.startsWith('q');
                           return (
                             <div key={cId} className={`rounded-[32px] border-2 overflow-hidden shadow-sm ${countsForPoints ? 'bg-amber-50 border-amber-400 ring-4 ring-amber-100' : 'bg-white border-slate-100'}`}>
                               <div className={`py-2 px-4 text-[13px] font-black uppercase tracking-widest flex justify-between items-center
                                 ${isKingCourt ? 'bg-amber-400 text-slate-900' : isBottomCourt ? 'bg-slate-200 text-slate-600' : 'bg-slate-800 text-white'}`}>
-                                <span>Court {cId}</span>
+                                <span>{headerLabel}</span>
+                                {isSwissRound && isCourtKey && (
+                                  <span className="text-[9px] font-bold opacity-60">Court {cId}</span>
+                                )}
                                 {isKingCourt && <span>{countsForPoints ? '👑 Points Active' : '👑'}</span>}
                                 {isBottomCourt && <span>⬇️</span>}
                               </div>

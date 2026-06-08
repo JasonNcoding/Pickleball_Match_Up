@@ -22,7 +22,7 @@ import {
   isKnockoutComplete,
   getKnockoutLeaderboard,
 } from '@/app/lib/engines/single-elimination';
-import { generateSwissPairings, calculateSwissStandings } from '@/app/lib/engines/swiss';
+import { generateSwissPairings, generateSwissPairingsList, calculateSwissStandings } from '@/app/lib/engines/swiss';
 import type { KnockoutState } from '@/app/lib/engines/single-elimination';
 import type { KOLeaderboardEntry } from '@/app/lib/engines/single-elimination/standings';
 import { autoFillByRating, shuffleTeams as shuffleTeamsFn, shufflePlayers as shufflePlayersFn } from '@/app/lib/engines/setup/auto-fill';
@@ -98,6 +98,24 @@ export interface TournamentStore {
   koCourtSwapSelection: string | null;
   /** Swiss-KO KO phase: click a court to select/swap matches between courts. */
   selectKoCourtForSwap: (courtId: string) => void;
+  /** Swiss async: confirmed matches accumulated within the current Swiss round (not yet committed to history). */
+  swissRoundBuffer: Match[];
+  /** Swiss-KO: true when Swiss phase is complete and waiting for user to confirm KO start. */
+  swissKoTransitionPending: boolean;
+  /** Swiss-KO: confirm start of KO phase from the transition confirmation screen. */
+  startKnockout: () => void;
+  /** Group stage: player IDs per group (snake-draft by rating). */
+  groupAssignments: string[][];
+  /** Group stage: 0-indexed index of the group currently being played. */
+  currentGroupIndex: number;
+  /** Group stage: advancing player IDs collected from each completed group. */
+  groupAdvancingPlayers: string[][];
+  /** Group stage: true when all groups are done and waiting for KO to start. */
+  groupStageComplete: boolean;
+  /** Group stage: save current group standings and advance to the next group (or set groupStageComplete). */
+  endGroup: () => void;
+  /** Group stage: start the shared KO bracket using all advancing players. */
+  startGroupKO: () => void;
   undoRound: () => void;
   finishTournament: () => void;
   resetTournament: () => Promise<void>;
@@ -158,6 +176,14 @@ export function useTournament(): TournamentStore {
   // Swiss-KO state
   const [swissKoPhase, setSwissKoPhase] = useState<'swiss' | 'knockout'>('swiss');
   const [koCourtSwapSelection, setKoCourtSwapSelection] = useState<string | null>(null);
+  const [swissRoundBuffer, setSwissRoundBuffer] = useState<Match[]>([]);
+  const [swissKoTransitionPending, setSwissKoTransitionPending] = useState(false);
+
+  // Group stage state
+  const [groupAssignments, setGroupAssignments] = useState<string[][]>([]);
+  const [currentGroupIndex, setCurrentGroupIndex] = useState(0);
+  const [groupAdvancingPlayers, setGroupAdvancingPlayers] = useState<string[][]>([]);
+  const [groupStageComplete, setGroupStageComplete] = useState(false);
 
   // Setup assignment state (not persisted)
   const [preAssignment, setPreAssignment] = useState<PreAssignment | null>(null);
@@ -182,6 +208,8 @@ export function useTournament(): TournamentStore {
       players, waitingPlayers, currentMatches, history, bulkInput,
       modeConfig, knockoutState, activeCourts, champions,
       matchQueue, totalScheduledMatches, swissCurrentRound, swissKoPhase,
+      swissRoundBuffer, swissKoTransitionPending,
+      groupAssignments, currentGroupIndex, groupAdvancingPlayers, groupStageComplete,
     };
     if (isHydrated && (stateToSave.setupComplete || overrideState)) {
       const result = await saveTournamentState(stateToSave);
@@ -191,7 +219,8 @@ export function useTournament(): TournamentStore {
   }, [isHydrated, setupComplete, tournamentFinished, selectedCourts, courtOrder,
       players, waitingPlayers, currentMatches, history, bulkInput,
       modeConfig, knockoutState, activeCourts, champions, matchQueue, totalScheduledMatches,
-      swissCurrentRound, swissKoPhase]);
+      swissCurrentRound, swissKoPhase, swissRoundBuffer, swissKoTransitionPending,
+      groupAssignments, currentGroupIndex, groupAdvancingPlayers, groupStageComplete]);
 
   useEffect(() => {
     const loadInitialData = async () => {
@@ -219,6 +248,12 @@ export function useTournament(): TournamentStore {
           if (data.totalScheduledMatches) setTotalScheduledMatches(data.totalScheduledMatches as number);
           if (data.swissCurrentRound !== undefined) setSwissCurrentRound(data.swissCurrentRound as number);
           if (data.swissKoPhase) setSwissKoPhase(data.swissKoPhase as 'swiss' | 'knockout');
+          if (data.swissRoundBuffer) setSwissRoundBuffer(data.swissRoundBuffer as Match[]);
+          if (data.swissKoTransitionPending) setSwissKoTransitionPending(data.swissKoTransitionPending as boolean);
+          if (data.groupAssignments) setGroupAssignments(data.groupAssignments as string[][]);
+          if (data.currentGroupIndex !== undefined) setCurrentGroupIndex(data.currentGroupIndex as number);
+          if (data.groupAdvancingPlayers) setGroupAdvancingPlayers(data.groupAdvancingPlayers as string[][]);
+          if (data.groupStageComplete) setGroupStageComplete(data.groupStageComplete as boolean);
         } catch (e) {
           console.error('Error parsing database state:', e);
         }
@@ -308,6 +343,22 @@ export function useTournament(): TournamentStore {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentMatches]);
+
+  // ── Swiss auto-advance: when all courts done + queue empty, commit round ────
+  useEffect(() => {
+    const isSwissPhase = setupComplete && !tournamentFinished && !swissKoTransitionPending &&
+      (modeConfig.mode === 'swiss' || (modeConfig.mode === 'swiss-ko' && swissKoPhase === 'swiss'));
+    if (!isSwissPhase) return;
+    const queueEmpty = matchQueue.length === 0;
+    const allDone = selectedCourts.every(cId => {
+      const m = currentMatches[cId];
+      return !m || m.teamA.length === 0 || m.winner !== null;
+    });
+    if (queueEmpty && allDone && swissRoundBuffer.length > 0) {
+      nextSwissRound();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMatches, matchQueue, swissRoundBuffer]);
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -425,18 +476,42 @@ export function useTournament(): TournamentStore {
 
   // ── Start Tournament ───────────────────────────────────────────────────────
 
-  function startTournament() {
-    const pre = preAssignment;
-    const teamSize = modeConfig.teamSize ?? 2;
+  function buildFixedPartners(p: PreAssignment): Record<string, string> {
+    const fp: Record<string, string> = {};
+    Object.values(p.courts).forEach(m => {
+      if (m.teamA.length > 1) { fp[m.teamA[0]] = m.teamA[1]; fp[m.teamA[1]] = m.teamA[0]; }
+      if (m.teamB.length > 1) { fp[m.teamB[0]] = m.teamB[1]; fp[m.teamB[1]] = m.teamB[0]; }
+    });
+    return fp;
+  }
 
-    function buildFixedPartners(p: PreAssignment): Record<string, string> {
-      const fp: Record<string, string> = {};
-      Object.values(p.courts).forEach(m => {
-        if (m.teamA.length > 1) { fp[m.teamA[0]] = m.teamA[1]; fp[m.teamA[1]] = m.teamA[0]; }
-        if (m.teamB.length > 1) { fp[m.teamB[0]] = m.teamB[1]; fp[m.teamB[1]] = m.teamB[0]; }
+  function startTournament() {
+    const teamSize = modeConfig.teamSize ?? 2;
+    const groupCount = modeConfig.groupCount ?? 1;
+    const isGroupMode = groupCount >= 2;
+
+    let activePlayers = players;
+    let groupPre = preAssignment;
+
+    if (isGroupMode) {
+      // Snake-draft by rating into groups
+      const sorted = [...players].sort((a, b) => b.rating - a.rating);
+      const assignments: string[][] = Array.from({ length: groupCount }, () => []);
+      sorted.forEach((p, i) => {
+        const row = Math.floor(i / groupCount);
+        const col = i % groupCount;
+        const groupIdx = row % 2 === 0 ? col : groupCount - 1 - col;
+        assignments[groupIdx].push(p.id);
       });
-      return fp;
+      setGroupAssignments(assignments);
+      setCurrentGroupIndex(0);
+      setGroupAdvancingPlayers([]);
+      setGroupStageComplete(false);
+      activePlayers = players.filter(p => assignments[0].includes(p.id));
+      groupPre = autoFillByRating(activePlayers, selectedCourts, ratingOrder, teamSize);
     }
+
+    const pre = isGroupMode ? groupPre : preAssignment;
 
     if (modeConfig.mode === 'knockout') {
       if (pre) {
@@ -447,7 +522,7 @@ export function useTournament(): TournamentStore {
           setModeConfig({ ...modeConfig, fixedPartners: buildFixedPartners(pre) });
         }
       } else {
-        const { newMatches, activeCourts: ac } = generateBracket(players, courtOrder, undefined, teamSize);
+        const { newMatches, activeCourts: ac } = generateBracket(activePlayers, courtOrder, undefined, teamSize);
         setCurrentMatches(newMatches);
         setActiveCourts(ac);
         setKnockoutState(DEFAULT_KNOCKOUT);
@@ -469,7 +544,7 @@ export function useTournament(): TournamentStore {
         }
       } else {
         // Singles: each player is their own team.
-        teams = players.map(p => [p.id]);
+        teams = activePlayers.map(p => [p.id]);
       }
 
       let allMatches = generateFullSchedule(teams, legs);
@@ -521,14 +596,20 @@ export function useTournament(): TournamentStore {
           if (!seen.has(key)) { seen.add(key); swissTeams.push([a, b]); }
         }
       } else {
-        swissTeams = players.map(p => [p.id]);
+        swissTeams = activePlayers.map(p => [p.id]);
       }
 
-      const swissMatches = generateSwissPairings({
-        teams: swissTeams, courts: selectedCourts,
-        history: [], swissRound: 0, players,
+      const pairings0 = generateSwissPairingsList({ teams: swissTeams, history: [], swissRound: 0, players: activePlayers });
+      const courts0 = selectedCourts;
+      const initMatches: Record<string, Match> = {};
+      courts0.forEach((cId, i) => {
+        const p = pairings0[i];
+        initMatches[cId] = p ? { teamA: p.teamA, teamB: p.teamB, winner: null } : { teamA: [], teamB: [], winner: null };
       });
-      setCurrentMatches(swissMatches);
+      const initQueue = pairings0.slice(courts0.length).map((p, i) => ({ id: `m-s0-${i}`, teamA: p.teamA, teamB: p.teamB }));
+      setCurrentMatches(initMatches);
+      setMatchQueue(initQueue);
+      setSwissRoundBuffer([]);
       setSwissCurrentRound(0);
       setWaitingPlayers([]);
       if (swissFixedPartners) setModeConfig({ ...modeConfig, fixedPartners: swissFixedPartners });
@@ -546,16 +627,23 @@ export function useTournament(): TournamentStore {
           if (!seen.has(key)) { seen.add(key); swissTeams.push([a, b]); }
         }
       } else {
-        swissTeams = players.map(p => [p.id]);
+        swissTeams = activePlayers.map(p => [p.id]);
       }
 
-      const swissMatches = generateSwissPairings({
-        teams: swissTeams, courts: selectedCourts,
-        history: [], swissRound: 0, players,
+      const sko0 = generateSwissPairingsList({ teams: swissTeams, history: [], swissRound: 0, players: activePlayers });
+      const skoCourts0 = selectedCourts;
+      const skoInit: Record<string, Match> = {};
+      skoCourts0.forEach((cId, i) => {
+        const p = sko0[i];
+        skoInit[cId] = p ? { teamA: p.teamA, teamB: p.teamB, winner: null } : { teamA: [], teamB: [], winner: null };
       });
-      setCurrentMatches(swissMatches);
+      const skoQueue = sko0.slice(skoCourts0.length).map((p, i) => ({ id: `m-sko0-${i}`, teamA: p.teamA, teamB: p.teamB }));
+      setCurrentMatches(skoInit);
+      setMatchQueue(skoQueue);
+      setSwissRoundBuffer([]);
       setSwissCurrentRound(0);
       setSwissKoPhase('swiss');
+      setSwissKoTransitionPending(false);
       setWaitingPlayers([]);
       if (swissFixedPartners) setModeConfig({ ...modeConfig, fixedPartners: swissFixedPartners });
     } else {
@@ -565,7 +653,7 @@ export function useTournament(): TournamentStore {
         setWaitingPlayers(pre.bench);
       } else {
         const result = generateRallyPairings({
-          isFirst: true, roster: players, courts: selectedCourts,
+          isFirst: true, roster: activePlayers, courts: selectedCourts,
           history: [], currentMatches: {}, waitingPlayers: [], teamSize,
         });
         setCurrentMatches(result.newMatches);
@@ -593,72 +681,98 @@ export function useTournament(): TournamentStore {
       swissTeams = players.map(p => [p.id]);
     }
 
-    // Commit the current round to history
-    const round: Round = {
-      id: history.length,
-      matches: { ...currentMatches },
-      waiting: [],
-    };
-    const newHistory = [...history, round];
-    setHistory(newHistory);
-
     const nextRoundNum = swissCurrentRound + 1;
     const totalRounds = modeConfig.swissRounds ?? 4;
     const isSwissKo = modeConfig.mode === 'swiss-ko';
 
+    // Build this round's match record from buffer (mid-round confirms) + last active matches
+    const roundMatches: Record<string, Match> = {};
+    swissRoundBuffer.forEach((m, i) => { roundMatches[`q${i}`] = m; });
+    Object.entries(currentMatches).forEach(([courtId, m]) => {
+      if (m.teamA.length > 0 && m.winner !== null) roundMatches[courtId] = m;
+    });
+
+    const round: Round = {
+      id: history.length,
+      matches: roundMatches,
+      waiting: [],
+      swissRound: swissCurrentRound,
+      isSwissKoTransition: isSwissKo && nextRoundNum >= totalRounds,
+    };
+    const newHistory = [...history, round];
+    setHistory(newHistory);
+    setSwissRoundBuffer([]);
+    setMatchQueue([]);
+
     if (nextRoundNum >= totalRounds) {
       if (isSwissKo) {
-        // ── Transition to Knockout phase ──────────────────────────────────
-        const advancing = modeConfig.swissKoAdvancing ?? 4;
-        const swissStandings = calculateSwissStandings(players, newHistory, modeConfig.recordMode === 'score');
-
-        // Collect advancing players in Swiss standing order (for bracket seeding)
-        let advancingPlayers: Player[];
-        if (modeConfig.fixedPartners && teamSize === 2) {
-          const seen = new Set<string>();
-          const advancingTeams: Player[][] = [];
-          for (const entry of swissStandings) {
-            if (advancingTeams.length >= advancing) break;
-            const partnerId = modeConfig.fixedPartners[entry.id];
-            if (!partnerId) continue;
-            const key = [entry.id, partnerId].sort().join('|');
-            if (seen.has(key)) continue;
-            seen.add(key);
-            const p1 = players.find(p => p.id === entry.id);
-            const p2 = players.find(p => p.id === partnerId);
-            if (p1 && p2) advancingTeams.push([p1, p2]);
-          }
-          // Flatten in seed order: seed1-player1, seed1-player2, seed2-player1, ...
-          advancingPlayers = advancingTeams.flat();
-        } else {
-          advancingPlayers = swissStandings.slice(0, advancing)
-            .map(e => players.find(p => p.id === e.id))
-            .filter(Boolean) as Player[];
-        }
-
-        const { newMatches: koMatches, activeCourts: koCourts } = generateBracket(
-          advancingPlayers, selectedCourts, modeConfig.fixedPartners, teamSize, true,
-        );
-        setCurrentMatches(koMatches);
-        setActiveCourts(koCourts);
-        setKnockoutState(DEFAULT_KNOCKOUT);
-        setSwissKoPhase('knockout');
-        setKoCourtSwapSelection(null);
+        setSwissKoTransitionPending(true);
       } else {
         setTournamentFinished(true);
         firePodiumConfetti();
       }
     } else {
-      const nextMatches = generateSwissPairings({
-        teams: swissTeams,
-        courts: selectedCourts,
-        history: newHistory,
-        swissRound: nextRoundNum,
-        players,
+      const nextPairings = generateSwissPairingsList({
+        teams: swissTeams, history: newHistory, swissRound: nextRoundNum, players,
       });
-      setCurrentMatches(nextMatches);
+      const courts = selectedCourts;
+      const nextInit: Record<string, Match> = {};
+      courts.forEach((cId, i) => {
+        const p = nextPairings[i];
+        nextInit[cId] = p ? { teamA: p.teamA, teamB: p.teamB, winner: null } : { teamA: [], teamB: [], winner: null };
+      });
+      const nextQueue = nextPairings.slice(courts.length).map((p, i) => ({
+        id: `m-s${nextRoundNum}-${i}`, teamA: p.teamA, teamB: p.teamB,
+      }));
+      setCurrentMatches(nextInit);
+      setMatchQueue(nextQueue);
       setSwissCurrentRound(nextRoundNum);
     }
+  }
+
+  // ── Swiss-KO: start the knockout phase from the confirmation screen ────────
+
+  function startKnockout() {
+    if (!swissKoTransitionPending) return;
+    const teamSize = modeConfig.teamSize ?? 2;
+    const advancing = modeConfig.swissKoAdvancing ?? 4;
+    const swissStandings = calculateSwissStandings(players, history, modeConfig.recordMode === 'score');
+
+    let advancingPlayers: Player[];
+    if (modeConfig.fixedPartners && teamSize === 2) {
+      const seen = new Set<string>();
+      const advancingTeams: Player[][] = [];
+      for (const entry of swissStandings) {
+        if (advancingTeams.length >= advancing) break;
+        const partnerId = modeConfig.fixedPartners[entry.id];
+        if (!partnerId) continue;
+        const key = [entry.id, partnerId].sort().join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const p1 = players.find(p => p.id === entry.id);
+        const p2 = players.find(p => p.id === partnerId);
+        if (p1 && p2) advancingTeams.push([p1, p2]);
+      }
+      advancingPlayers = advancingTeams.flat();
+    } else {
+      advancingPlayers = swissStandings.slice(0, advancing)
+        .map(e => players.find(p => p.id === e.id))
+        .filter(Boolean) as Player[];
+    }
+
+    const nonAdvancingIds = players
+      .filter(p => !advancingPlayers.some(ap => ap.id === p.id))
+      .map(p => p.id);
+
+    const { newMatches: koMatches, activeCourts: koCourts } = generateBracket(
+      advancingPlayers, selectedCourts, modeConfig.fixedPartners, teamSize, true,
+    );
+    setCurrentMatches(koMatches);
+    setActiveCourts(koCourts);
+    setKnockoutState({ eliminatedPlayerIds: nonAdvancingIds, knockoutRound: 0 });
+    setSwissKoPhase('knockout');
+    setKoCourtSwapSelection(null);
+    setSwissKoTransitionPending(false);
   }
 
   // ── Swiss-KO: swap matches between two courts (KO phase only) ─────────────
@@ -686,6 +800,28 @@ export function useTournament(): TournamentStore {
   function confirmCourtResult(courtId: string) {
     const m = currentMatches[courtId];
     if (!m || !m.winner) return;
+
+    // ── Swiss async: add confirmed match to buffer, load next queued match ──
+    if (modeConfig.mode === 'swiss' || (modeConfig.mode === 'swiss-ko' && swissKoPhase === 'swiss')) {
+      setSwissRoundBuffer(prev => [...prev, { ...m }]);
+      const livePlaying = new Set<string>();
+      Object.entries(currentMatches).forEach(([cId, cm]) => {
+        if (cId === courtId || !cm || cm.teamA.length === 0 || cm.winner !== null) return;
+        cm.teamA.forEach(id => livePlaying.add(id));
+        cm.teamB.forEach(id => livePlaying.add(id));
+      });
+      const queue = [...matchQueue];
+      const idx = queue.findIndex(sm =>
+        !sm.teamA.some(id => livePlaying.has(id)) &&
+        !sm.teamB.some(id => livePlaying.has(id)),
+      );
+      const nextMatch: Match = idx >= 0
+        ? (() => { const sm = queue.splice(idx, 1)[0]; return { teamA: sm.teamA, teamB: sm.teamB, winner: null }; })()
+        : { teamA: [], teamB: [], winner: null };
+      setCurrentMatches({ ...currentMatches, [courtId]: nextMatch });
+      setMatchQueue([...queue]);
+      return;
+    }
 
     // Save this match to history as a single-match round.
     const snapshot: Round = {
@@ -751,11 +887,14 @@ export function useTournament(): TournamentStore {
     const newQueue = [...matchQueue];
     newQueue.splice(idx, 1);
 
-    // If the court currently has an auto-assigned idle placeholder, just replace.
-    // If it has a valid (pending but non-confirmed) match, put it back at front.
     const existing = currentMatches[courtId];
-    if (existing && existing.teamA.length > 0 && !existing.winner) {
-      // Court not yet confirmed — can't override a live match.
+    const isSwissPhase = modeConfig.mode === 'swiss' || (modeConfig.mode === 'swiss-ko' && swissKoPhase === 'swiss');
+
+    if (isSwissPhase && existing && existing.teamA.length > 0 && !existing.winner) {
+      // Swiss: push the current unfinished match to back of queue so it plays later
+      newQueue.push({ id: `m-pushed-${Date.now()}`, teamA: existing.teamA, teamB: existing.teamB });
+    } else if (!isSwissPhase && existing && existing.teamA.length > 0 && !existing.winner) {
+      // RR: can't override a live unconfirmed match
       return;
     }
 
@@ -773,6 +912,7 @@ export function useTournament(): TournamentStore {
       waiting: [...waitingPlayers],
       players: [...players],
       eliminatedPlayerIds: [...knockoutState.eliminatedPlayerIds],
+      activeCourts: [...activeCourts],
     };
 
     if (modeConfig.mode === 'rally') {
@@ -840,6 +980,46 @@ export function useTournament(): TournamentStore {
         setCurrentMatches({ ...currentMatches, [courtId]: { ...restoredMatch, winner: null, scoreA: undefined, scoreB: undefined } });
         setMatchQueue(newQueue);
       }
+    } else if (
+      modeConfig.mode === 'swiss' ||
+      (modeConfig.mode === 'swiss-ko' && (swissKoPhase === 'swiss' || last.isSwissKoTransition))
+    ) {
+      // Regenerate the initial state for that Swiss round (deterministic from history snapshot)
+      const teamSize = modeConfig.teamSize ?? 2;
+      let undoTeams: string[][];
+      if (modeConfig.fixedPartners && teamSize === 2) {
+        const seen = new Set<string>();
+        undoTeams = [];
+        for (const [a, b] of Object.entries(modeConfig.fixedPartners)) {
+          const key = [a, b].sort().join('|');
+          if (!seen.has(key)) { seen.add(key); undoTeams.push([a, b]); }
+        }
+      } else {
+        undoTeams = players.map(p => [p.id]);
+      }
+      const restoredRound = last.swissRound ?? swissCurrentRound;
+      const undoPairings = generateSwissPairingsList({
+        teams: undoTeams, history: prev, swissRound: restoredRound, players,
+      });
+      const courts = selectedCourts;
+      const undoInit: Record<string, Match> = {};
+      courts.forEach((cId, i) => {
+        const p = undoPairings[i];
+        undoInit[cId] = p ? { teamA: p.teamA, teamB: p.teamB, winner: null } : { teamA: [], teamB: [], winner: null };
+      });
+      const undoQueue = undoPairings.slice(courts.length).map((p, i) => ({
+        id: `m-undo-${i}`, teamA: p.teamA, teamB: p.teamB,
+      }));
+      setCurrentMatches(undoInit);
+      setMatchQueue(undoQueue);
+      setSwissRoundBuffer([]);
+      setSwissCurrentRound(restoredRound);
+      setWaitingPlayers([]);
+      if (last.isSwissKoTransition) {
+        setSwissKoPhase('swiss');
+        setKoCourtSwapSelection(null);
+      }
+      setSwissKoTransitionPending(false);
     } else {
       setCurrentMatches(last.matches);
       setWaitingPlayers(last.waiting);
@@ -847,6 +1027,7 @@ export function useTournament(): TournamentStore {
       if (last.eliminatedPlayerIds !== undefined) {
         setKnockoutState(s => ({ ...s, eliminatedPlayerIds: last.eliminatedPlayerIds! }));
       }
+      if (last.activeCourts) setActiveCourts(last.activeCourts);
     }
 
     setHistory(prev);
@@ -854,9 +1035,135 @@ export function useTournament(): TournamentStore {
     setBottomBonusMessage(null);
   }
 
+  // ── Group Stage: end current group, advance to next or set up KO ──────────
+
+  function endGroup() {
+    const groupCount = modeConfig.groupCount ?? 1;
+    const advancing = modeConfig.advancingPerGroup ?? 1;
+    const groupPlayerIds = groupAssignments[currentGroupIndex] ?? [];
+    const standings = getLeaderboard().filter(e => groupPlayerIds.includes(e.id));
+    const advancingIds = standings.slice(0, advancing).map(e => e.id);
+    const newGroupAdvancing = [...groupAdvancingPlayers, advancingIds];
+    setGroupAdvancingPlayers(newGroupAdvancing);
+
+    const nextGroupIdx = currentGroupIndex + 1;
+    if (nextGroupIdx >= groupCount) {
+      setGroupStageComplete(true);
+      setTournamentFinished(false);
+    } else {
+      const teamSize = modeConfig.teamSize ?? 2;
+      const nextGroupPlayerIds = groupAssignments[nextGroupIdx];
+      const nextGroupPlayers = players.filter(p => nextGroupPlayerIds.includes(p.id));
+      const nextPre = autoFillByRating(nextGroupPlayers, selectedCourts, ratingOrder, teamSize);
+
+      setCurrentGroupIndex(nextGroupIdx);
+      setTournamentFinished(false);
+      setSwissCurrentRound(0);
+      setSwissRoundBuffer([]);
+      setMatchQueue([]);
+      setWaitingPlayers([]);
+
+      if (modeConfig.mode === 'round-robin') {
+        const legs = modeConfig.legs ?? 1;
+        let teams: string[][];
+        let fixedPartners: Record<string, string> | undefined;
+        if (nextPre && teamSize === 2) {
+          fixedPartners = buildFixedPartners(nextPre);
+          const seen = new Set<string>();
+          teams = [];
+          for (const [a, b] of Object.entries(fixedPartners)) {
+            const key = [a, b].sort().join('|');
+            if (!seen.has(key)) { seen.add(key); teams.push([a, b]); }
+          }
+        } else {
+          teams = nextGroupPlayers.map(p => [p.id]);
+        }
+        const allMatches = generateFullSchedule(teams, legs);
+        const initialMatches: Record<string, Match> = {};
+        selectedCourts.forEach((cId, i) => {
+          const sm = allMatches[i];
+          initialMatches[cId] = sm ? { teamA: sm.teamA, teamB: sm.teamB, winner: null } : { teamA: [], teamB: [], winner: null };
+        });
+        setCurrentMatches(initialMatches);
+        setMatchQueue(allMatches.slice(selectedCourts.length));
+        setTotalScheduledMatches(allMatches.length);
+        if (fixedPartners) setModeConfig({ ...modeConfig, fixedPartners });
+      } else if (modeConfig.mode === 'swiss') {
+        let swissTeams: string[][];
+        let fp: Record<string, string> | undefined;
+        if (nextPre && teamSize === 2) {
+          fp = buildFixedPartners(nextPre);
+          const seen = new Set<string>();
+          swissTeams = [];
+          for (const [a, b] of Object.entries(fp)) {
+            const key = [a, b].sort().join('|');
+            if (!seen.has(key)) { seen.add(key); swissTeams.push([a, b]); }
+          }
+        } else {
+          swissTeams = nextGroupPlayers.map(p => [p.id]);
+        }
+        const nextPairings = generateSwissPairingsList({ teams: swissTeams, history: [], swissRound: 0, players: nextGroupPlayers });
+        const nextMatches: Record<string, Match> = {};
+        selectedCourts.forEach((cId, i) => {
+          const p = nextPairings[i];
+          nextMatches[cId] = p ? { teamA: p.teamA, teamB: p.teamB, winner: null } : { teamA: [], teamB: [], winner: null };
+        });
+        setCurrentMatches(nextMatches);
+        setMatchQueue(nextPairings.slice(selectedCourts.length).map((p, i) => ({ id: `m-g${nextGroupIdx}-${i}`, teamA: p.teamA, teamB: p.teamB })));
+        if (fp) setModeConfig({ ...modeConfig, fixedPartners: fp });
+      } else {
+        // Rally fallback
+        if (nextPre) {
+          setCurrentMatches(nextPre.courts);
+          setWaitingPlayers(nextPre.bench);
+        }
+      }
+    }
+  }
+
+  function startGroupKO() {
+    if (!groupStageComplete) return;
+    const allAdvancingIds = groupAdvancingPlayers.flat();
+    const advancingPerGroup = modeConfig.advancingPerGroup ?? 1;
+    const teamSize = modeConfig.teamSize ?? 2;
+
+    // Seed: rank0 from each group, then rank1, etc.
+    const seeded: Player[] = [];
+    for (let rank = 0; rank < advancingPerGroup; rank++) {
+      groupAdvancingPlayers.forEach(groupIds => {
+        const pid = groupIds[rank];
+        const p = players.find(pl => pl.id === pid);
+        if (p) seeded.push(p);
+      });
+    }
+
+    const ppc = teamSize * 2;
+    const bracketCourts = Math.floor(seeded.length / ppc);
+    const orderedCourts = selectedCourts.slice(0, bracketCourts);
+    const pre = autoFillByRating(seeded, orderedCourts, 'highToTop', teamSize);
+    if (!pre) return;
+    const fixedPartners = buildFixedPartners(pre);
+    const { newMatches, activeCourts: newActiveCourts } = generateBracket(
+      seeded, orderedCourts, fixedPartners, teamSize, true,
+    );
+    const nonAdvancingIds = players.filter(p => !allAdvancingIds.includes(p.id)).map(p => p.id);
+    setKnockoutState({ eliminatedPlayerIds: nonAdvancingIds, knockoutRound: 0 });
+    setCurrentMatches(newMatches);
+    setActiveCourts(newActiveCourts);
+    setModeConfig({ ...modeConfig, mode: 'knockout', fixedPartners });
+    setGroupStageComplete(false);
+    setMatchQueue([]);
+    setWaitingPlayers([]);
+  }
+
   // ── Finish / Reset ─────────────────────────────────────────────────────────
 
   function finishTournament() {
+    const isGroupMode = (modeConfig.groupCount ?? 1) >= 2;
+    if (isGroupMode && !groupStageComplete) {
+      endGroup();
+      return;
+    }
     setTournamentFinished(true);
     firePodiumConfetti();
   }
@@ -908,6 +1215,8 @@ export function useTournament(): TournamentStore {
     bottomBonusMessage, modeConfig, knockoutState, activeCourts, champions,
     matchQueue, queueSelectCourtId, totalScheduledMatches, completedMatchCount,
     swissCurrentRound, swissKoPhase, koCourtSwapSelection,
+    swissRoundBuffer, swissKoTransitionPending,
+    groupAssignments, currentGroupIndex, groupAdvancingPlayers, groupStageComplete,
     kingCourt, bottomCourt, secondBottomCourt, isRoundOne,
     preAssignment, setupSwapSelection, ratingOrder,
     setSelectedCourts: fn => setSelectedCourts(fn),
@@ -930,6 +1239,9 @@ export function useTournament(): TournamentStore {
     startTournament,
     nextRound,
     nextSwissRound,
+    startKnockout,
+    endGroup,
+    startGroupKO,
     selectKoCourtForSwap,
     confirmCourtResult,
     selectQueueMatch,
