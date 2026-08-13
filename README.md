@@ -1,13 +1,12 @@
-## Pickleball Tournament Tracker 
+# Overview
 
-A  Next.js application for pickleball tournament tracking where it has two main task:
-  - Updating score, reviewing matchups and annoucing next round
-  - Present matchups for customer on external display
+A full-stack web app that helps pickleball players find and organize matches — built end-to-end from database to UI, and used by real players outside a classroom setting.
+Built to make it easier for local pickleball players to find open matches and coordinate games without relying on group chats.
 
-## Tech Stack:
-Next.js, Supabase, Vercel. 
+## Features
 
-## Result:
+- Updating score, reviewing matchups and annoucing next round
+- Present matchups for customer on external display
 
 Admin View:
 ![alt text](<Admin View.png>) 
@@ -15,12 +14,30 @@ Admin View:
 Customer View:
 ![alt text](<Customer View.png>)
 
-## How to use:
+## Tech Stack
 
-Clone this repo and use below bash command
+| Layer | Tech |
+|---|---|
+| Frontend | React |
+| Backend | Node.js |
+| Database | PostgreSQL, Supabase |
+| Hosting | Vercel |
 
-```
+## Setup & Installation
+
+```bash
+git clone https://github.com/JasonNcoding/Pickleball_Match_Up.git
+cd Pickleball_Match_Up
 npm install
-
-npm run build
+npm run dev
 ```
+
+## Usage
+
+Link Vercel and Supabase to current project, then host locally with provided API keys
+
+## Future Improvements
+
+- Natch reminders/notifications
+- New mode
+- Expand to customer view on their personal device.
